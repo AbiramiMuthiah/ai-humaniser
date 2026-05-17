@@ -138,15 +138,25 @@ cd ai-humaniser
 ```
 ## Backend Setup:
 Navigate to Backend
+
 cd backend
+
 Create Virtual Environment
+
 python -m venv venv
+
 Activate Environment
+
 Windows
+
 venv\Scripts\activate
+
 Install Dependencies
+
 pip install -r requirements.txt
+
 Run Backend
+
 uvicorn main:app --reload
 
 Backend runs on:
@@ -155,10 +165,15 @@ http://127.0.0.1:8000
 
 ## Frontend Setup:
 Open Another Terminal
+
 cd frontend
+
 Install Dependencies
+
 npm install
+
 Run Frontend
+
 npm run dev
 
 Frontend runs on:
