@@ -1,0 +1,10 @@
+node_modules/
+venv/
+.vscode/
+.next/
+__pycache__/
+.env
+uploads/
+results/
+dist/
+build/
