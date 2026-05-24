@@ -17,61 +17,47 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      // Not required — Google OAuth users won't have one
+      // not required — Google OAuth users have no password
     },
-
-    // ✅ FIXED: added "basic" and "unlimited" to enum
+    googleId: {
+      type: String,
+    },
     plan: {
       type: String,
       enum: ["free", "basic", "pro", "unlimited"],
       default: "free",
     },
-
-    provider: {
-      type: String,
-      enum: ["local", "google"],
-      default: "local",
-    },
-
-    googleId: {
-      type: String,
-    },
-
-    // ✅ NEW: needed for subscription cancellation webhook
     stripeCustomerId: {
       type: String,
     },
     stripeSubscriptionId: {
       type: String,
     },
-
-    isVerified: {
-      type: Boolean,
-      default: false,
-    },
-
     dailyCount: {
       type: Number,
       default: 0,
     },
     dailyResetAt: {
       type: Date,
-      default: null,
+      default: () => {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        return d;
+      },
     },
   },
   { timestamps: true }
 );
 
-// ✅ FIXED: hash password before saving (was missing from your original User.js)
+// Hash password before save
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password") || !this.password) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
-// ✅ NEW: method to verify passwords at login
+// Compare password
 userSchema.methods.comparePassword = async function (candidate) {
-  if (!this.password) return false;
   return bcrypt.compare(candidate, this.password);
 };
 
