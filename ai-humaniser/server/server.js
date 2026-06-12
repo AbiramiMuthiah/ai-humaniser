@@ -100,26 +100,41 @@ app.post("/confirm-payment", authMiddleware, async (req, res) => {
   }
 });
 
+/* ── DOWNGRADE TO FREE ── */
+app.post("/downgrade-to-free", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    user.plan = "free";
+    await user.save();
+    console.log("User downgraded to free:", user.email);
+    res.json({ success: true, plan: "free" });
+  } catch (err) {
+    console.error("Downgrade error:", err);
+    res.status(500).json({ message: "Could not downgrade plan" });
+  }
+});
+
 /* ── GEMINI ── */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 /* ── HELPERS ── */
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
 
 function getDailyLimit(plan) {
   const p = String(plan || "free").toLowerCase();
-  if (p === "unlimited") return 999;
-  if (p === "pro") return 100;
-  if (p === "basic") return 25;
+  if (p === "unlimited") return 150;
+  if (p === "pro") return 50;
+  if (p === "basic") return 15;
   return 5;
 }
 
 function getWordLimit(plan) {
   const p = String(plan || "free").toLowerCase();
-  if (p === "unlimited") return 99999;
-  if (p === "pro") return 1500;
-  if (p === "basic") return 500;
+  if (p === "unlimited") return 1500;
+  if (p === "pro") return 1200;
+  if (p === "basic") return 800;
   return 300;
 }
 
@@ -130,6 +145,107 @@ function stripAiFormatting(text) {
     .replace(/\*\*/g, "")
     .replace(/^(Sure|Certainly|Of course|Absolutely)[,!]?\s*/i, "")
     .trim();
+}
+
+/* ── ACADEMIC VARIABILITY ENGINE ── */
+// Rule-based post-processing for academic/professional modes
+// Avoids casual language but still breaks AI detector patterns
+function injectAcademicVariability(text) {
+  let out = text;
+
+  // Kill remaining AI clichés that are safe to replace in academic text
+  const academicSwaps = [
+    [/furthermore/gi, "beyond this"],
+    [/moreover/gi, "building on this"],
+    [/additionally/gi, "also"],
+    [/consequently/gi, "as a result"],
+    [/nevertheless/gi, "despite this"],
+    [/subsequently/gi, "following this"],
+    [/in conclusion/gi, "taken together"],
+    [/to summarize/gi, "in brief"],
+    [/it is worth noting/gi, "notably"],
+    [/it is important to note/gi, "importantly"],
+    [/it should be noted/gi, "notably"],
+    [/it can be seen that/gi, "the data suggest that"],
+    [/it has been shown/gi, "research shows"],
+    [/it was found that/gi, "the study found that"],
+    [/utilize/gi, "use"],
+    [/utilization/gi, "use"],
+    [/facilitate/gi, "support"],
+    [/demonstrate/gi, "show"],
+    [/individuals/gi, "people"],
+    [/ascertain/gi, "determine"],
+    [/commence/gi, "begin"],
+    [/terminate/gi, "end"],
+    [/substantial/gi, "significant"],
+    [/numerous/gi, "many"],
+    [/optimal/gi, "best"],
+    [/paradigm/gi, "framework"],
+    [/robust/gi, "strong"],
+    [/leverage/gi, "use"],
+    [/delve/gi, "examine"],
+    [/nuanced/gi, "complex"],
+    [/in today's (?:fast-paced |ever-changing |modern )?world/gi, "currently"],
+    [/in modern society/gi, "in recent years"],
+    [/the fact that/gi, "that"],
+    [/due to the fact that/gi, "because"],
+    [/in order to/gi, "to"],
+    [/with regard to/gi, "regarding"],
+    [/prior to/gi, "before"],
+    [/subsequent to/gi, "after"],
+    [/plays a (?:crucial|vital|key|important|pivotal) role/gi, "is central to"],
+    [/has the ability to/gi, "can"],
+    [/is able to/gi, "can"],
+  ];
+
+  for (const [pattern, replacement] of academicSwaps) {
+    out = out.replace(pattern, replacement);
+  }
+
+  // Break sentences over 200 chars at natural conjunction points
+  out = out.replace(
+    /([^.!?]{160,}?),\s+(and|but|which|while|although|however)\s+/g,
+    (match, before, conj) => {
+      const conjMap = { and: "Additionally,", but: "However,", which: "This", while: "Meanwhile,", although: "Although", however: "However," };
+      return `${before}. ${conjMap[conj] || conj.charAt(0).toUpperCase() + conj.slice(1)} `;
+    }
+  );
+
+  // Add em-dash for academic emphasis (replace some commas before "which is/was")
+  out = out.replace(/,\s+(which (?:is|was|remains|represents|reflects))\s+/g, " — $1 ");
+
+  // Remove passive voice patterns
+  out = out
+    .replace(/It can be seen that/gi, "The evidence suggests that")
+    .replace(/It has been (?:shown|demonstrated|proven|found)/gi, "Research has shown")
+    .replace(/It is (?:generally |widely |commonly )?believed/gi, "Scholars generally argue")
+    .replace(/It is (?:clear|evident|obvious) that/gi, "Clearly,")
+    .replace(/This (?:clearly |obviously )?demonstrates/gi, "This shows")
+    .replace(/This (?:clearly |obviously )?indicates/gi, "This suggests")
+    .replace(/This (?:clearly |obviously )?suggests/gi, "The data suggest");
+
+  // Vary paragraph openers from AI defaults
+  const paragraphs = out.split(/\n\n+/);
+  const academicStarters = [
+    ["The main ", "A primary "],
+    ["The key ", "A central "],
+    ["The primary ", "One important "],
+    ["The most important ", "Among the most significant "],
+    ["The purpose ", "The aim "],
+    ["The results ", "These findings "],
+    ["The study ", "This research "],
+  ];
+
+  const result = paragraphs.map((para, i) => {
+    if (i === 0) return para;
+    let p = para;
+    for (const [from, to] of academicStarters) {
+      if (p.startsWith(from)) { p = to + p.slice(from.length); break; }
+    }
+    return p;
+  });
+
+  return result.join("\n\n");
 }
 
 /* ── HUMAN VARIABILITY ENGINE ── */
@@ -282,17 +398,62 @@ app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
     const words = text.trim().split(/\s+/);
     if (words.length > wordLimit) return res.status(400).json({ message: `Word limit exceeded. Your plan allows ${wordLimit} words per request.` });
 
+    const isAcademic = mode === "academic" || mode === "professional";
+    const isPremium = ["pro", "unlimited"].includes(req.user.plan?.toLowerCase());
+
+    // toneDesc used in prompts — must be defined before prompt1
     const modePrompts = {
       standard: "natural, conversational, easy to read",
-      academic: "formal but still personal — like a knowledgeable human professor",
+      professional: "professional and polished — suitable for reports and formal documents",
+      academic: "formal academic — suitable for university assignments and research",
       creative: "vivid, expressive, with personality",
       casual: "informal, like texting a smart friend",
     };
     const toneDesc = modePrompts[mode] || modePrompts.standard;
-    const isPremium = ["pro", "unlimited"].includes(req.user.plan?.toLowerCase());
 
-    const prompt1 = [
-      `You are a real human who writes ${toneDesc}. Rewrite this AI text to score 0% on AI detectors.`,
+    // Academic mode uses a completely different strategy:
+    // preserve formal vocabulary, keep structure, only change AI-detector patterns
+    const prompt1 = isAcademic ? [
+      `You are a human ${mode === "professional" ? "professional" : "student"} who wrote this for a ${mode === "professional" ? "workplace report" : "university assignment"}. Your writing is natural but academic.`,
+      "",
+      "Rewrite this AI-generated text so it scores 0% on Quillbot, Turnitin, and GPTZero — while staying fully academic.",
+      "",
+      "The #1 AI detector signal: every sentence has the same rhythm and length. You MUST break this.",
+      "",
+      "REQUIRED — do ALL of these:",
+      "1. VARY sentence length dramatically — mix short (5-8 words), medium (12-18 words), and long (20-30 words) sentences",
+      "2. START paragraphs differently — not every paragraph starts with 'The' or 'This'. Use: 'Notably,', 'As such,', 'When examining...', 'A key concern here is...', 'What emerges from this...'",
+      "3. BREAK perfect 3-sentence paragraph structure — some paragraphs 1-2 sentences, some 5-6",
+      "4. REPLACE these AI clichés completely:",
+      "   - 'it is worth noting' → 'notably' or 'importantly'",
+      "   - 'furthermore' / 'moreover' → 'beyond this' or 'building on this'",
+      "   - 'in conclusion' → 'taken together' or 'overall'",
+      "   - 'it can be seen that' → state the observation directly",
+      "   - 'in today\'s world' / 'in modern society' → 'currently' or 'in recent years'",
+      "   - 'plays a crucial/vital role' → 'is central to' or 'directly affects'",
+      "   - 'it is important to note' → just say it directly",
+      "   - 'individuals' → 'people', 'students', or 'researchers' (be specific)",
+      "   - 'utilize' → 'use'",
+      "   - 'demonstrate' → 'show' or 'reveal'",
+      "   - 'Consequently,' at sentence start → rephrase the whole sentence",
+      "   - 'Therefore,' at sentence start → rephrase or use 'As a result,'",
+      "5. USE one em-dash (—) somewhere for natural emphasis",
+      "6. CONVERT passive voice: 'it has been shown' → 'research shows', 'it was found' → 'the study found'",
+      "7. MAKE AT LEAST ONE paragraph just 1-2 sentences long",
+      "",
+      "KEEP:",
+      "- Third-person voice — no 'I' or 'we'",
+      "- No contractions — academic writing avoids these",
+      "- All facts, data, statistics exactly as stated",
+      "- Any citations exactly as they appear",
+      "- Formal register — no slang",
+      "",
+      "Output ONLY the rewritten text. No intro. No explanation.",
+      "",
+      "Text:",
+      text,
+    ].join("\n") : [
+      "You are a real human writer. Rewrite this AI text to score 0% on AI detectors.",
       "",
       "DESTROY these AI patterns:",
       "- Uniform sentence lengths — mix very short (3-6 words) with longer ones",
@@ -305,10 +466,10 @@ app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
       "- Start 1-2 sentences with And, But, or So",
       "- Add one sentence fragment. Just one. Like: And that's the thing.",
       "- Use contractions: don't, it's, you'll, wasn't, they're, we've",
-      "- Include one small personal-sounding aside like 'which honestly makes sense' or 'and that's kind of the point'",
+      "- Include one small personal-sounding aside",
       "- Keep ALL facts — do not add or remove information",
       "",
-      "Output ONLY the rewritten text. No intro. No quotes around it.",
+      "Output ONLY the rewritten text. No intro. No quotes.",
       "",
       "Text:",
       text,
@@ -317,25 +478,80 @@ app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
     const pass1Result = await model.generateContent(prompt1);
     const pass1 = stripAiFormatting(pass1Result.response.text());
 
-    let humanised;
-    if (isPremium) {
-      const prompt2 = [
-        `Read this text. Find any sentences still sounding AI-written and rewrite just those.`,
-        "",
-        "AI sentence signs: starts with 'The' + noun, uses passive voice, has formal connector at start, same length as surrounding sentences, contains: utilize/individuals/demonstrate/facilitate/moreover/furthermore/optimal/robust/leverage/seamless/paradigm/nuanced/delve/tapestry",
-        "",
-        `Rewrite AI-sounding sentences in ${toneDesc} language. Leave already-human sentences alone.`,
-        "Output ONLY the full improved text.",
-        "",
-        "Text:",
-        pass1,
-      ].join("\n");
-      const pass2Result = await model.generateContent(prompt2);
-      const pass2 = stripAiFormatting(pass2Result.response.text());
-      humanised = injectHumanVariability(pass2);
-    } else {
-      humanised = injectHumanVariability(pass1);
-    }
+    // ── PASS 2: targeted sentence-level fix ──────────────────────
+    const prompt2Lines = isAcademic ? [
+      "You are a human editor reviewing a university assignment draft.",
+      "Read each sentence. If it sounds like it was written by AI, rewrite just that sentence.",
+      "",
+      "Signs a sentence is AI-written (fix these):",
+      "- Starts with: 'Furthermore,', 'Moreover,', 'Additionally,', 'Consequently,', 'Nevertheless,', 'Subsequently,'",
+      "- Uses: 'it is worth noting', 'it should be noted', 'it is important to note', 'it can be seen that'",
+      "- Uses: 'plays a crucial/vital/pivotal role', 'in today\'s world', 'in modern society'",
+      "- Every sentence in a paragraph is the same length",
+      "- Passive voice: 'has been shown', 'can be seen', 'it was found'",
+      "",
+      "When rewriting:",
+      "- Keep academic register — no contractions, no slang",
+      "- Vary the sentence length from surrounding sentences",
+      "- Start the sentence differently from how AI would start it",
+      "- Keep all facts exactly the same",
+      "",
+      "Output ONLY the full corrected text.",
+      "",
+      "Text:",
+      pass1,
+    ] : [
+      "Read this text carefully. Find every sentence that still sounds AI-generated and rewrite just those sentences.",
+      "",
+      "AI sentence red flags:",
+      "- Formal connectors at start: 'Furthermore,', 'Moreover,', 'Additionally,', 'Consequently,'",
+      "- Clichés: 'it is worth noting', 'plays a crucial role', 'in today\'s fast-paced world'",
+      "- Passive: 'it has been shown', 'it can be seen', 'it was found that'",
+      "- Same length as all surrounding sentences",
+      "- Sounds like a textbook or corporate memo",
+      "",
+      "Rewrite AI sentences only. Leave human-sounding ones alone.",
+      `Keep tone: ${toneDesc}.`,
+      "Output ONLY the full improved text.",
+      "",
+      "Text:",
+      pass1,
+    ];
+
+    const pass2Result = await model.generateContent(prompt2Lines.join("\n"));
+    const pass2 = stripAiFormatting(pass2Result.response.text());
+
+    // ── PASS 3: statistical variability injection ─────────────────
+    // This breaks the uniform perplexity/burstiness patterns detectors measure
+    const prompt3Lines = [
+      "You are rewriting a piece of text to make it sound MORE like a human wrote it.",
+      "",
+      "Do these specific things to the text below:",
+      "1. Find the 2-3 LONGEST sentences and split each into two shorter ones",
+      "2. Find the 2-3 SHORTEST sentences and merge each with the next sentence",
+      "3. Add ONE parenthetical aside somewhere — like (which is particularly relevant here) or (a finding consistent with earlier research)",
+      isAcademic
+        ? "4. Change one sentence to start with a number: 'Three key factors...' or 'Two distinct patterns...'"
+        : "4. Add one dash (—) in a sentence for natural emphasis",
+      "5. Make sure no two consecutive sentences start with the same word",
+      "",
+      "Do NOT change the meaning. Do NOT add new facts.",
+      isAcademic
+        ? "Keep academic register — no contractions."
+        : "Keep the same tone as the existing text.",
+      "Output ONLY the rewritten text.",
+      "",
+      "Text:",
+      pass2,
+    ];
+
+    const pass3Result = await model.generateContent(prompt3Lines.join("\n"));
+    const pass3 = stripAiFormatting(pass3Result.response.text());
+
+    // ── Final rule-based injection ────────────────────────────────
+    const humanised = isAcademic
+      ? injectAcademicVariability(pass3)
+      : injectHumanVariability(pass3);
 
     const saved = await Text.create({ userId: req.user.id, input: text, output: humanised, mode });
     await User.findByIdAndUpdate(req.user.id, { $inc: { dailyCount: 1 } });

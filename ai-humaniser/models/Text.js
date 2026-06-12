@@ -19,7 +19,7 @@ const textSchema = new mongoose.Schema(
     // ✅ FIXED: added mode field (server.js saves mode but old schema didn't have it)
     mode: {
       type: String,
-      enum: ["standard", "academic", "creative", "casual"],
+      enum: ["standard", "professional", "academic", "creative", "casual"],
       default: "standard",
     },
   },

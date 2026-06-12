@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import api from "../../lib/api";
-import LogoMark from "../components/LogoMark";
+
 
 function planLimitFallback(plan) {
   const p = (plan || "FREE").toUpperCase();
-  if (p === "PRO") return 100;
-  if (p === "PLUS") return 25;
+  if (p === "UNLIMITED") return 150;
+  if (p === "PRO") return 50;
+  if (p === "BASIC") return 15;
   return 5;
 }
 
@@ -16,6 +17,30 @@ function makeTitle(input) {
   const t = String(input || "").trim().replace(/\s+/g, " ");
   if (!t) return "Untitled";
   return t.length > 42 ? t.slice(0, 42) + "…" : t;
+}
+
+// ✅ FIX 2: Inline copy button that shows "Copied!" in place
+function CopyButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      style={{
+        padding: "4px 12px", borderRadius: 8,
+        border: copied ? "1px solid rgba(125,239,160,0.4)" : "1px solid rgba(255,255,255,0.12)",
+        background: copied ? "rgba(125,239,160,0.12)" : "rgba(255,255,255,0.06)",
+        color: copied ? "#7defa0" : "rgba(255,255,255,0.8)",
+        fontSize: 12, cursor: "pointer", fontWeight: 700,
+        transition: "all 0.2s", minWidth: 58,
+      }}
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+    >
+      {copied ? "✓ Copied!" : "Copy"}
+    </button>
+  );
 }
 
 export default function DashboardPage() {
@@ -45,10 +70,45 @@ export default function DashboardPage() {
   // 3-dot menu state
   const [menuOpenId, setMenuOpenId] = useState(null);
 
+  // File upload
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef(null);
+  const [mode, setMode] = useState("standard");
+
   const remaining = useMemo(
     () => Math.max(0, (limitToday || 0) - (usedToday || 0)),
     [limitToday, usedToday]
   );
+
+  // Word counts
+  const wordCount = useMemo(
+    () => (aiText.trim() ? aiText.trim().split(/\s+/).length : 0),
+    [aiText]
+  );
+  const outputWordCount = useMemo(
+    () => (humanText.trim() ? humanText.trim().split(/\s+/).length : 0),
+    [humanText]
+  );
+
+  // Word limit per plan — unlimited plan has no cap (use 999999 as sentinel)
+  // wordLimit is for UI display/enforcement only
+  // unlimited plan has no frontend cap (server handles per-request limit)
+  const wordLimit = useMemo(() => {
+    const p = plan.toUpperCase();
+    if (p === "UNLIMITED") return 1500;
+    if (p === "PRO") return 1200;
+    if (p === "BASIC") return 800;
+    return 300;
+  }, [plan]);
+
+  const wordLimitDisplay = wordLimit.toLocaleString();
+
+  // File upload allowed for pro/unlimited only
+  const canUploadFile = useMemo(() => {
+    const p = plan.toUpperCase();
+    return p === "PRO" || p === "UNLIMITED";
+  }, [plan]);
 
   const editorRef = useRef(null);
 
@@ -75,6 +135,34 @@ export default function DashboardPage() {
       return;
     }
 
+    // ✅ Handle Stripe payment success redirect
+    const payment = searchParams?.get("payment");
+    const sessionId = searchParams?.get("session_id");
+
+    if (payment === "success" && sessionId) {
+      // Call backend to confirm and upgrade plan from Stripe session
+      api.post("/confirm-payment", { sessionId })
+        .then((res) => {
+          const upgradedPlan = res.data?.plan?.toUpperCase() || "PRO";
+          setPlan(upgradedPlan);
+          setLimitToday(planLimitFallback(upgradedPlan));
+          showToast(`🎉 Upgraded to ${upgradedPlan} plan!`);
+          loadMe();
+        })
+        .catch(() => {
+          // webhook may have already handled it, just reload user
+          showToast("🎉 Payment successful!");
+          loadMe();
+        })
+        .finally(() => {
+          // Clean up URL so refresh doesn't re-trigger
+          window.history.replaceState({}, "", "/dashboard");
+        });
+    } else if (payment === "cancel") {
+      showToast("Payment cancelled.");
+      window.history.replaceState({}, "", "/dashboard");
+    }
+
     loadMe();
     loadHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,7 +180,6 @@ export default function DashboardPage() {
         if (payload?.output) setHumanText(payload.output);
         sessionStorage.removeItem("loadFromHistory");
 
-        // scroll to editor + toast
         setTimeout(() => {
           editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
         }, 50);
@@ -101,13 +188,7 @@ export default function DashboardPage() {
         sessionStorage.removeItem("loadFromHistory");
       }
     }
-
-    // optional query cleanup (if you use it later)
-    const loaded = searchParams?.get("loaded");
-    if (loaded) {
-      // do nothing, just here if you want to use query-based load
-    }
-  }, [mounted, searchParams]);
+  }, [mounted]);
 
   async function loadMe() {
     try {
@@ -175,7 +256,7 @@ export default function DashboardPage() {
 
     setLoadingHumanise(true);
     try {
-      const res = await api.post("/humanise", { text: t });
+      const res = await api.post("/humanise", { text: t, mode });
 
       const out =
         res.data?.humanised ||
@@ -186,16 +267,17 @@ export default function DashboardPage() {
 
       setHumanText(out);
 
+      // ✅ FIX 1: backend sends usage.used / usage.limit (not usedToday/limitToday)
       if (res.data?.usage) {
         const u = res.data.usage;
-        if (typeof u.usedToday === "number") setUsedToday(u.usedToday);
-        if (typeof u.limitToday === "number") setLimitToday(u.limitToday);
+        if (typeof u.used === "number") setUsedToday(u.used);
+        if (typeof u.limit === "number") setLimitToday(u.limit);
         if (u.plan) setPlan(String(u.plan).toUpperCase());
-      } else {
-        await loadMe();
       }
+      // Always sync with server to keep nav badge accurate
+      await loadMe();
 
-      showToast("Humanised successfully");
+      showToast("✓ Humanised! Output copied ready.");
       await loadHistory();
     } catch (e) {
       const status = e?.response?.status;
@@ -204,6 +286,49 @@ export default function DashboardPage() {
       if (status === 429) await loadMe();
     } finally {
       setLoadingHumanise(false);
+    }
+  }
+
+  async function handleFileUpload(e) {
+    const file = e.target.files?.[0];
+    if (!fileInputRef.current) return;
+    fileInputRef.current.value = "";
+
+    if (!file) return;
+
+    const allowed = ["text/plain", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+    if (!allowed.includes(file.type) && !file.name.match(/\.(txt|pdf|docx)$/i)) {
+      setUploadError("Only .txt, .pdf, or .docx files are supported.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError("File must be under 5MB.");
+      return;
+    }
+
+    setUploadError("");
+    setUploading(true);
+
+    try {
+      if (file.type === "text/plain" || file.name.endsWith(".txt")) {
+        // Read plain text directly
+        const text = await file.text();
+        setAiText(text.trim());
+        showToast("File loaded!");
+      } else {
+        // For PDF/DOCX — send to backend
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await api.post("/upload-file", formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        setAiText(res.data?.text || "");
+        showToast("File loaded!");
+      }
+    } catch (err) {
+      setUploadError(err?.response?.data?.message || "Failed to read file.");
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -290,7 +415,7 @@ export default function DashboardPage() {
         /* FULL WIDTH layout (remove side space) */
         .pageWrap {
           width: 100%;
-          padding: 18px 14px 64px;
+          padding: 12px 14px 16px;
         }
 
         /* Shell */
@@ -315,16 +440,19 @@ export default function DashboardPage() {
           border: 1px solid rgba(255, 255, 255, 0.1);
           box-shadow: 0 30px 70px rgba(0, 0, 0, 0.25);
           overflow: hidden;
-
-          /* smooth collapse */
-          transition: width 0.25s ease;
+          flex-shrink: 0;
+          transition: width 0.25s ease, min-width 0.25s ease, flex 0.25s ease;
           will-change: width;
         }
         .historySidebar.open {
-          width: 340px;
+          width: 300px;
+          min-width: 300px;
+          flex: 0 0 300px;
         }
         .historySidebar.closed {
-          width: 62px;
+          width: 44px;
+          min-width: 44px;
+          flex: 0 0 44px;
         }
 
         .historyHeader {
@@ -332,8 +460,13 @@ export default function DashboardPage() {
           align-items: center;
           justify-content: space-between;
           gap: 10px;
-          padding: 12px 12px;
+          padding: 12px 8px;
           border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          min-height: 48px;
+        }
+        .historySidebar.closed .historyHeader {
+          justify-content: center;
+          padding: 12px 4px;
         }
         .historyTitle {
           font-weight: 800;
@@ -475,6 +608,8 @@ export default function DashboardPage() {
         .dashMain {
           flex: 1;
           min-width: 0;
+          display: flex;
+          flex-direction: column;
         }
 
         .editorCard {
@@ -487,13 +622,15 @@ export default function DashboardPage() {
           border: 1px solid rgba(255, 255, 255, 0.1);
           padding: 16px;
           box-shadow: 0 30px 70px rgba(0, 0, 0, 0.35);
+          display: flex;
+          flex-direction: column;
         }
 
-        /* Bigger text boxes */
         .twoCols {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 14px;
+          flex: 1;
         }
 
         .label {
@@ -504,14 +641,18 @@ export default function DashboardPage() {
 
         .textarea {
           width: 100%;
-          min-height: 420px;
-          resize: vertical;
+          height: calc(100vh - 280px);
+          min-height: 320px;
+          resize: none;
           border-radius: 14px;
           padding: 14px;
           border: 1px solid rgba(255, 255, 255, 0.1);
           background: rgba(0, 0, 0, 0.22);
           color: rgba(255, 255, 255, 0.92);
           outline: none;
+          font-family: inherit;
+          font-size: 14px;
+          line-height: 1.6;
         }
         .textarea:focus {
           border-color: rgba(139, 120, 255, 0.5);
@@ -576,7 +717,9 @@ export default function DashboardPage() {
           }
           .historySidebar.open,
           .historySidebar.closed {
-            width: 100%;
+            width: 100% !important;
+            min-width: 100% !important;
+            flex: none !important;
             height: auto;
             position: relative;
             top: auto;
@@ -589,7 +732,8 @@ export default function DashboardPage() {
             grid-template-columns: 1fr;
           }
           .textarea {
-            min-height: 320px;
+            height: 280px;
+            min-height: 200px;
           }
         }
       `}</style>
@@ -703,12 +847,17 @@ export default function DashboardPage() {
           {/* Sidebar */}
           <aside className={`historySidebar ${historyOpen ? "open" : "closed"}`}>
             <div className="historyHeader">
-              <div className="historyTitle">{historyOpen ? "History" : "H"}</div>
+              {historyOpen && <div className="historyTitle">History</div>}
 
               <div className="historyHeaderRight">
 
-                <button className="btnSmall" onClick={() => setHistoryOpen((v) => !v)}>
-                  {historyOpen ? "Collapse" : "Open"}
+                <button
+                  className="btnSmall"
+                  onClick={() => setHistoryOpen((v) => !v)}
+                  title={historyOpen ? "Collapse sidebar" : "Open sidebar"}
+                  style={{ padding: "6px 8px", fontSize: 14 }}
+                >
+                  {historyOpen ? "←" : "→"}
                 </button>
               </div>
             </div>
@@ -787,12 +936,7 @@ export default function DashboardPage() {
                             </div>
                           )}
                         </>
-                      ) : (
-                        // closed mode: just a small dot
-                        <div style={{ display: "grid", placeItems: "center", height: 44, color: "var(--muted)" }}>
-                          •
-                        </div>
-                      )}
+                      ) : null}
                     </div>
                   );
                 })}
@@ -802,48 +946,173 @@ export default function DashboardPage() {
 
           {/* Main */}
           <main className="dashMain">
-            <div style={{ marginBottom: 14 }}>
-              <h1 style={{ margin: 0, fontSize: 40, letterSpacing: -0.6 }}>Dashboard</h1>
-              <p style={{ margin: "6px 0 0", color: "var(--muted)" }}>
-                Rewrite AI text to sound natural and human-written.
-              </p>
-            </div>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <LogoMark size={34} />
-              <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-                <span style={{ fontWeight: 800 }}>AI Humaniser</span>
-                <span style={{ fontSize: 12, color: "var(--muted2)" }}>Dashboard</span>
-              </div>
-            </div>
+            
 
-            <div
-              style={{
-                position: "fixed",
-                left: 14,
-                bottom: 18,
-                opacity: 0.55,
-                zIndex: 5,
-                pointerEvents: "none",
-              }}
-            >
-              <LogoMark size={36} />
-            </div>
-
-            <div className="editorCard" ref={editorRef}>
+            <div className="editorCard" ref={editorRef} style={{ flex: 1 }}>
               <div className="twoCols">
+                {/* ── Input pane ── */}
                 <div>
-                  <div className="label">AI Content</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div className="label" style={{ marginBottom: 0 }}>AI Content</div>
+                      {/* Mode selector */}
+                      <select
+                        value={mode}
+                        onChange={(e) => setMode(e.target.value)}
+                        style={{
+                          padding: "4px 10px", borderRadius: 8,
+                          border: "1px solid rgba(139,120,255,0.3)",
+                          background: "#0f1224",
+                          color: "rgba(255,255,255,0.9)",
+                          fontSize: 12, cursor: "pointer",
+                          outline: "none",
+                          appearance: "auto",
+                          WebkitAppearance: "auto",
+                        }}
+                      >
+                        <option value="standard"  style={{ background: "#0f1224", color: "#fff" }}>Standard</option>
+                        <option value="professional" style={{ background: "#0f1224", color: "#fff" }}>Professional ✦</option>
+                        <option value="academic"  style={{ background: "#0f1224", color: "#fff" }}>Academic</option>
+                        <option value="creative"  style={{ background: "#0f1224", color: "#fff" }}>Creative</option>
+                        <option value="casual"    style={{ background: "#0f1224", color: "#fff" }}>Casual</option>
+                      </select>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {/* Word count badge */}
+                      <span style={{
+                        fontSize: 12,
+                        color: wordCount > wordLimit ? "rgba(255,120,80,0.95)" : "var(--muted)",
+                        background: wordCount > wordLimit ? "rgba(255,120,80,0.1)" : "rgba(255,255,255,0.06)",
+                        border: `1px solid ${wordCount > wordLimit ? "rgba(255,120,80,0.28)" : "rgba(255,255,255,0.1)"}`,
+                        borderRadius: 8,
+                        padding: "3px 9px",
+                        fontWeight: 600,
+                        transition: "all 0.2s",
+                      }}>
+                        {wordCount.toLocaleString()} / {wordLimitDisplay} words
+                      </span>
+
+                      {/* Upload button — Pro & Unlimited only */}
+                      {canUploadFile ? (
+                        <>
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".txt,.pdf,.docx"
+                            style={{ display: "none" }}
+                            onChange={handleFileUpload}
+                          />
+                          <button
+                            style={{
+                              padding: "4px 12px",
+                              borderRadius: 8,
+                              border: "1px solid rgba(139,120,255,0.3)",
+                              background: "rgba(139,120,255,0.1)",
+                              color: "rgba(255,255,255,0.85)",
+                              fontSize: 12,
+                              cursor: uploading ? "not-allowed" : "pointer",
+                              fontWeight: 600,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 5,
+                              opacity: uploading ? 0.6 : 1,
+                            }}
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={uploading}
+                            title="Upload .txt, .pdf, or .docx"
+                          >
+                            {uploading ? "⏳ Loading..." : "📄 Upload file"}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          style={{
+                            padding: "3px 10px",
+                            borderRadius: 8,
+                            border: "1px solid rgba(255,255,255,0.06)",
+                            background: "transparent",
+                            color: "rgba(255,255,255,0.22)",
+                            fontSize: 11,
+                            cursor: "pointer",
+                            fontWeight: 500,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                            letterSpacing: 0.2,
+                          }}
+                          onClick={() => router.push("/pricing")}
+                          title="Upgrade to Pro or Unlimited to upload files"
+                        >
+                          🔒 Pro only
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   <textarea
                     className="textarea"
                     value={aiText}
                     onChange={(e) => setAiText(e.target.value)}
                     placeholder="Paste AI-generated text here..."
                   />
+
+                  {/* Upload error */}
+                  {uploadError && (
+                    <div style={{
+                      marginTop: 6, padding: "7px 10px", borderRadius: 8,
+                      background: "rgba(255,120,80,0.1)", border: "1px solid rgba(255,120,80,0.22)",
+                      color: "rgba(255,200,180,0.95)", fontSize: 12,
+                    }}>
+                      {uploadError}
+                    </div>
+                  )}
+
+                  {/* Word limit warning */}
+                  {wordCount > wordLimit && (
+                    <div style={{
+                      marginTop: 6, padding: "7px 10px", borderRadius: 8,
+                      background: "rgba(255,120,80,0.1)", border: "1px solid rgba(255,120,80,0.22)",
+                      color: "rgba(255,200,180,0.95)", fontSize: 12,
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                    }}>
+                      <span>⚠ Over word limit by {wordCount - wordLimit} words</span>
+                      {plan.toUpperCase() !== "UNLIMITED" && (
+                        <button
+                          style={{ background: "none", border: "none", color: "#a78bfa", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                          onClick={() => router.push("/pricing")}
+                        >Upgrade plan →</button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
+                {/* ── Output pane ── */}
                 <div>
-                  <div className="label">Humanised Output</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <div className="label" style={{ marginBottom: 0 }}>Humanised Output</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {/* Output word count */}
+                      {outputWordCount > 0 && (
+                        <span style={{
+                          fontSize: 12,
+                          color: "var(--muted)",
+                          background: "rgba(125,239,160,0.08)",
+                          border: "1px solid rgba(125,239,160,0.18)",
+                          borderRadius: 8,
+                          padding: "3px 9px",
+                          fontWeight: 600,
+                        }}>
+                          {outputWordCount} words
+                        </span>
+                      )}
+                      {/* Copy button - shows "Copied!" inline */}
+                      {humanText && (
+                        <CopyButton text={humanText} />
+                      )}
+                    </div>
+                  </div>
+
                   <textarea
                     className="textarea"
                     value={humanText}
@@ -854,17 +1123,24 @@ export default function DashboardPage() {
               </div>
 
               <div className="footerRow">
-                <div style={{ fontSize: 13, color: "var(--muted)" }}>
-                  Tip: Keep input above 5 characters. Output is saved to history.
+                <div style={{ fontSize: 12, color: "var(--muted2)" }}>
                   {remaining === 0 ? (
-                    <span style={{ marginLeft: 10, color: "rgba(255,120,120,0.95)" }}>
-                      Daily limit reached ({limitToday}/day). Upgrade to continue.
+                    <span style={{ color: "rgba(255,120,120,0.95)" }}>
+                      Daily limit reached.{" "}
+                      <a href="/pricing" style={{ color: "#a78bfa", fontWeight: 700 }}>Upgrade →</a>
                     </span>
-                  ) : null}
+                  ) : (
+                    <span>Output is saved to history.</span>
+                  )}
                 </div>
 
                 <div className="actionRow">
-                  <button className="btnPrimary" onClick={handleHumanise} disabled={loadingHumanise}>
+                  <button
+                    className="btnPrimary"
+                    onClick={handleHumanise}
+                    disabled={loadingHumanise || (wordCount > wordLimit && plan.toUpperCase() !== "UNLIMITED")}
+                    title={wordCount > wordLimit ? `Reduce text to under ${wordLimit} words` : ""}
+                  >
                     {loadingHumanise ? "Working..." : "Humanise"}
                   </button>
                 </div>
@@ -873,13 +1149,9 @@ export default function DashboardPage() {
               {error ? (
                 <div
                   style={{
-                    marginTop: 12,
-                    padding: "10px 12px",
-                    borderRadius: 12,
-                    background: "rgba(255,120,120,0.08)",
-                    border: "1px solid rgba(255,120,120,0.18)",
-                    color: "rgba(255,210,210,0.95)",
-                    fontSize: 13,
+                    marginTop: 12, padding: "10px 12px", borderRadius: 12,
+                    background: "rgba(255,120,120,0.08)", border: "1px solid rgba(255,120,120,0.18)",
+                    color: "rgba(255,210,210,0.95)", fontSize: 13,
                   }}
                 >
                   {error}

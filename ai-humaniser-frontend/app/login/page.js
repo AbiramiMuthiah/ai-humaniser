@@ -20,7 +20,6 @@ export default function LoginPage() {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // If already logged in, go dashboard
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (token) router.replace("/dashboard");
@@ -32,16 +31,10 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post("/auth/login", form);
-
       localStorage.setItem("token", res.data.token);
-
-      // ✅ store user too (your backend sends res.data.user)
       if (res.data.user) localStorage.setItem("user", JSON.stringify(res.data.user));
-
-      // init usage key
       const key = `usage:${todayKey()}`;
       if (!localStorage.getItem(key)) localStorage.setItem(key, "0");
-
       router.push("/dashboard");
     } catch (err) {
       setMsg(err?.response?.data?.message || "Login failed");
@@ -97,27 +90,22 @@ export default function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </button>
 
-            <div className="divider">
-              <span>or</span>
-            </div>
+            <div className="divider"><span>or</span></div>
 
             <div className="googleRow">
               <GoogleButton
                 onDone={(payload) => {
-                  // If your GoogleButton can pass token/user back, store it.
                   if (payload?.token) localStorage.setItem("token", payload.token);
                   if (payload?.user) localStorage.setItem("user", JSON.stringify(payload.user));
-
                   const key = `usage:${todayKey()}`;
                   if (!localStorage.getItem(key)) localStorage.setItem(key, "0");
-
                   router.push("/dashboard");
                 }}
               />
             </div>
 
             <div className="authFooter">
-              <span>Don’t have an account?</span>
+              <span>Don&apos;t have an account?</span>
               <Link href="/register">Create account</Link>
             </div>
           </form>
