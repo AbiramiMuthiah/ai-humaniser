@@ -9,6 +9,7 @@ const multer = require("multer");
 const connectDB = require("../config/db");
 const Text = require("../models/Text");
 const User = require("../models/User");
+const GuestUsage = require("../models/GuestUsage");
 const authRoutes = require("../routes/auth");
 const authMiddleware = require("./middleware/authMiddleware");
 const usageLimit = require("./middleware/usageLimit");
@@ -45,7 +46,7 @@ app.post("/webhook", express.raw({ type: "application/json" }), async (req, res)
 });
 
 /* ── MIDDLEWARE ── */
-app.use(cors());
+app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(express.json({ limit: "2mb" }));
 app.use("/auth", authRoutes);
 
@@ -117,7 +118,40 @@ app.post("/downgrade-to-free", authMiddleware, async (req, res) => {
 
 /* ── GEMINI ── */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+// Shared retry wrapper for Gemini calls — used by both the initial humanise
+// pass and the second detector-evasion pass below.
+async function generateWithRetries(systemInstruction, userPrompt, temperature = 1.25) {
+  const modelInstance = genAI.getGenerativeModel({ model: "gemini-2.5-flash", systemInstruction });
+  let result;
+  const maxAttempts = 3;
+  let delay = 1000;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      result = await modelInstance.generateContent({
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: { temperature, topP: 0.95, topK: 40 },
+      });
+      break;
+    } catch (err) {
+      const isTransient = err.status === 503 || err.status === 429 ||
+        (err.message && (
+          err.message.includes("503") || err.message.includes("429") ||
+          err.message.toLowerCase().includes("quota") ||
+          err.message.toLowerCase().includes("rate limit") ||
+          err.message.toLowerCase().includes("overloaded") ||
+          err.message.toLowerCase().includes("high demand") ||
+          err.message.toLowerCase().includes("unavailable")
+        ));
+      if (isTransient && attempt < maxAttempts) {
+        console.warn(`[Gemini API] Attempt ${attempt}/${maxAttempts} failed. Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay *= 2;
+      } else { throw err; }
+    }
+  }
+  return result.response.text();
+}
 
 /* ── HELPERS ── */
 function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
@@ -138,6 +172,11 @@ function getWordLimit(plan) {
   return 300;
 }
 
+function isProOrUnlimited(plan) {
+  const p = String(plan || "free").toLowerCase();
+  return p === "pro" || p === "unlimited";
+}
+
 function stripAiFormatting(text) {
   return String(text || "")
     .replace(/^["'`]+|["'`]+$/g, "")
@@ -147,230 +186,456 @@ function stripAiFormatting(text) {
     .trim();
 }
 
-/* ── ACADEMIC VARIABILITY ENGINE ── */
-// Rule-based post-processing for academic/professional modes
-// Avoids casual language but still breaks AI detector patterns
-function injectAcademicVariability(text) {
-  let out = text;
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-  // Kill remaining AI clichés that are safe to replace in academic text
-  const academicSwaps = [
-    [/furthermore/gi, "beyond this"],
-    [/moreover/gi, "building on this"],
-    [/additionally/gi, "also"],
-    [/consequently/gi, "as a result"],
-    [/nevertheless/gi, "despite this"],
-    [/subsequently/gi, "following this"],
-    [/in conclusion/gi, "taken together"],
-    [/to summarize/gi, "in brief"],
-    [/it is worth noting/gi, "notably"],
-    [/it is important to note/gi, "importantly"],
-    [/it should be noted/gi, "notably"],
-    [/it can be seen that/gi, "the data suggest that"],
-    [/it has been shown/gi, "research shows"],
-    [/it was found that/gi, "the study found that"],
-    [/utilize/gi, "use"],
-    [/utilization/gi, "use"],
-    [/facilitate/gi, "support"],
-    [/demonstrate/gi, "show"],
-    [/individuals/gi, "people"],
-    [/ascertain/gi, "determine"],
-    [/commence/gi, "begin"],
-    [/terminate/gi, "end"],
-    [/substantial/gi, "significant"],
-    [/numerous/gi, "many"],
-    [/optimal/gi, "best"],
-    [/paradigm/gi, "framework"],
-    [/robust/gi, "strong"],
-    [/leverage/gi, "use"],
-    [/delve/gi, "examine"],
-    [/nuanced/gi, "complex"],
-    [/in today's (?:fast-paced |ever-changing |modern )?world/gi, "currently"],
-    [/in modern society/gi, "in recent years"],
-    [/the fact that/gi, "that"],
-    [/due to the fact that/gi, "because"],
-    [/in order to/gi, "to"],
-    [/with regard to/gi, "regarding"],
-    [/prior to/gi, "before"],
-    [/subsequent to/gi, "after"],
-    [/plays a (?:crucial|vital|key|important|pivotal) role/gi, "is central to"],
-    [/has the ability to/gi, "can"],
-    [/is able to/gi, "can"],
-  ];
-
-  for (const [pattern, replacement] of academicSwaps) {
-    out = out.replace(pattern, replacement);
-  }
-
-  // Break sentences over 200 chars at natural conjunction points
-  out = out.replace(
-    /([^.!?]{160,}?),\s+(and|but|which|while|although|however)\s+/g,
-    (match, before, conj) => {
-      const conjMap = { and: "Additionally,", but: "However,", which: "This", while: "Meanwhile,", although: "Although", however: "However," };
-      return `${before}. ${conjMap[conj] || conj.charAt(0).toUpperCase() + conj.slice(1)} `;
-    }
-  );
-
-  // Add em-dash for academic emphasis (replace some commas before "which is/was")
-  out = out.replace(/,\s+(which (?:is|was|remains|represents|reflects))\s+/g, " — $1 ");
-
-  // Remove passive voice patterns
-  out = out
-    .replace(/It can be seen that/gi, "The evidence suggests that")
-    .replace(/It has been (?:shown|demonstrated|proven|found)/gi, "Research has shown")
-    .replace(/It is (?:generally |widely |commonly )?believed/gi, "Scholars generally argue")
-    .replace(/It is (?:clear|evident|obvious) that/gi, "Clearly,")
-    .replace(/This (?:clearly |obviously )?demonstrates/gi, "This shows")
-    .replace(/This (?:clearly |obviously )?indicates/gi, "This suggests")
-    .replace(/This (?:clearly |obviously )?suggests/gi, "The data suggest");
-
-  // Vary paragraph openers from AI defaults
-  const paragraphs = out.split(/\n\n+/);
-  const academicStarters = [
-    ["The main ", "A primary "],
-    ["The key ", "A central "],
-    ["The primary ", "One important "],
-    ["The most important ", "Among the most significant "],
-    ["The purpose ", "The aim "],
-    ["The results ", "These findings "],
-    ["The study ", "This research "],
-  ];
-
-  const result = paragraphs.map((para, i) => {
-    if (i === 0) return para;
-    let p = para;
-    for (const [from, to] of academicStarters) {
-      if (p.startsWith(from)) { p = to + p.slice(from.length); break; }
-    }
-    return p;
-  });
-
-  return result.join("\n\n");
+function splitSentences(text) {
+  return (String(text || "").match(/[^.!?]+[.!?]+|\S+$/g) || []).map(s => s.trim()).filter(Boolean);
 }
 
-/* ── HUMAN VARIABILITY ENGINE ── */
-function injectHumanVariability(text) {
+/* ══════════════════════════════════════════════════════════
+   POST-PROCESSING ENGINE — attacks all 3 detector pillars:
+   1. PERPLEXITY  — swap top-probability AI words
+   2. BURSTINESS  — force sentence length variation
+   3. TOKEN PROB  — inject low-probability human patterns
+══════════════════════════════════════════════════════════ */
+
+/* ── Pillar 1: Perplexity swaps ── */
+const PERPLEXITY_SWAPS = [
+  [/\bfurthermore\b/gi, () => pick(["on top of that", "beyond that", "what's more", "and another thing"])],
+  [/\bmoreover\b/gi, () => pick(["beyond this", "and beyond that", "what's more", "then there's also"])],
+  [/\badditionally\b/gi, () => pick(["also", "on top of this", "plus", "and there's"])],
+  [/\bconsequently\b/gi, () => pick(["so", "as a result", "because of this", "this means"])],
+  [/\bnevertheless\b/gi, () => pick(["even so", "still though", "despite this", "that said"])],
+  [/\bsubsequently\b/gi, () => pick(["after that", "then", "following this", "next"])],
+  [/\bin conclusion\b/gi, () => pick(["all in all", "at the end of the day", "to wrap up", "when you step back"])],
+  [/\bin summary\b/gi, () => pick(["basically", "in short", "to put it simply", "the bottom line is"])],
+  [/\butilize\b/gi, () => pick(["use", "apply", "work with"])],
+  [/\butilization\b/gi, () => pick(["use", "usage", "application"])],
+  [/\bfacilitate\b/gi, () => pick(["help", "support", "make easier"])],
+  [/\bdemonstrate\b/gi, () => pick(["show", "reveal", "make clear"])],
+  [/\bindividuals\b/gi, () => pick(["people", "users", "students", "workers"])],
+  [/\boptimal\b/gi, () => pick(["best", "ideal", "most effective"])],
+  [/\bparadigm\b/gi, () => pick(["approach", "way of thinking", "framework"])],
+  [/\brobust\b/gi, () => pick(["strong", "solid", "reliable"])],
+  [/\bleverage\b/gi, () => pick(["use", "tap into", "take advantage of"])],
+  [/\bdelve\b/gi, () => pick(["dig into", "explore", "look at"])],
+  [/\bnuanced\b/gi, () => pick(["complex", "layered", "subtle"])],
+  [/\bseamlessly?\b/gi, () => pick(["smoothly", "without friction", "cleanly"])],
+  [/\bcutting-edge\b/gi, () => pick(["latest", "modern", "advanced"])],
+  [/\bstate-of-the-art\b/gi, () => pick(["advanced", "top-of-the-line", "modern"])],
+  [/\bgroundbreaking\b/gi, () => pick(["new", "novel", "innovative"])],
+  [/\bsynergy\b/gi, () => pick(["teamwork", "collaboration", "combined effort"])],
+  [/\bsubstantial\b/gi, () => pick(["big", "significant", "large"])],
+  [/\bnumerous\b/gi, () => pick(["many", "a lot of", "plenty of", "several"])],
+  [/\bin today's (?:fast-paced |modern |ever-changing )?world\b/gi, () => pick(["these days", "nowadays", "right now"])],
+  [/\bin modern society\b/gi, () => pick(["today", "currently", "in recent years"])],
+  [/\bdue to the fact that\b/gi, () => pick(["because", "since", "given that"])],
+  [/\bin order to\b/gi, () => pick(["to", "so that"])],
+  [/\bplays a (?:crucial|vital|key|important|pivotal) role\b/gi, () => pick(["matters a lot", "is central to", "directly affects"])],
+  [/\bhas the ability to\b/gi, () => pick(["can", "is able to"])],
+  [/\bit is worth noting\b/gi, () => pick(["notably", "importantly", "worth pointing out"])],
+  [/\bit is important to note\b/gi, () => pick(["notably", "importantly"])],
+  [/\bIt can be seen that\b/gi, () => "Clearly,"],
+  [/\bIt has been (?:shown|demonstrated|proven|found)\b/gi, () => pick(["Research shows", "Studies reveal", "Evidence suggests"])],
+  [/\bThis (?:clearly |obviously )?demonstrates\b/gi, () => pick(["This shows", "This reveals", "This makes clear"])],
+  [/\bThis (?:clearly |obviously )?indicates\b/gi, () => pick(["This means", "This suggests", "This points to"])],
+];
+
+/* ── Pillar 2: Burstiness injector ── */
+function injectBurstiness(text) {
+  const paragraphs = text.split(/\n\n+/);
+  return paragraphs.map(para => {
+    if (!para.trim()) return para;
+    const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
+    if (sentences.length < 3) return para;
+    const result = [];
+    let i = 0;
+    while (i < sentences.length) {
+      const s = sentences[i].trim();
+      const wordCount = s.split(/\s+/).length;
+      if (wordCount >= 15 && wordCount <= 25 && i < sentences.length - 1) {
+        const r = Math.random();
+        if (r < 0.3) {
+          const split = s.replace(
+            /^(.{60,}?),\s+(and|but|which|so|while|although|however)\s+/i,
+            (m, before, conj) => {
+              const conjMap = { and: "And", but: "But", which: "This", so: "So", while: "Meanwhile,", although: "Although", however: "However," };
+              return before + '. ' + (conjMap[conj.toLowerCase()] || conj.charAt(0).toUpperCase() + conj.slice(1)) + ' ';
+            }
+          );
+          result.push(split);
+        } else if (r < 0.5 && i + 1 < sentences.length) {
+          const next = sentences[i + 1].trim();
+          if (next.split(/\s+/).length < 12) {
+            const connector = pick([" — ", "; ", ", and ", ", but "]);
+            result.push(s.replace(/[.!?]+$/, '') + connector + next.charAt(0).toLowerCase() + next.slice(1));
+            i += 2; continue;
+          } else { result.push(s); }
+        } else { result.push(s); }
+      } else { result.push(s); }
+      i++;
+    }
+    return result.join(' ');
+  }).join('\n\n');
+}
+
+/* ── Pillar 3: Low-probability token injector ── */
+function injectLowProbTokens(text, isAcademic = false) {
   let out = text;
-
-  const wordSwaps = [
-    [/\bfurthermore\b/gi, "on top of that"],
-    [/\bmoreover\b/gi, "plus"],
-    [/\badditionally\b/gi, "also"],
-    [/\bconsequently\b/gi, "so"],
-    [/\bnevertheless\b/gi, "still"],
-    [/\bsubsequently\b/gi, "after that"],
-    [/\bnotwithstanding\b/gi, "despite that"],
-    [/\bin conclusion\b/gi, "all in all"],
-    [/\bin summary\b/gi, "basically"],
-    [/\bto summarize\b/gi, "to put it simply"],
-    [/\bit is worth noting\b/gi, "worth mentioning"],
-    [/\bit is important to note\b/gi, "one thing to keep in mind"],
-    [/\bit should be noted\b/gi, "worth noting"],
-    [/\bone must consider\b/gi, "you have to think about"],
-    [/\butilize\b/gi, "use"],
-    [/\butilization\b/gi, "use"],
-    [/\bimplementation\b/gi, "setup"],
-    [/\bfacilitate\b/gi, "help"],
-    [/\bcommence\b/gi, "start"],
-    [/\bterminate\b/gi, "end"],
-    [/\bpurchase\b/gi, "buy"],
-    [/\bindividuals\b/gi, "people"],
-    [/\bprovide assistance\b/gi, "help"],
-    [/\bdemonstrate\b/gi, "show"],
-    [/\bascertain\b/gi, "find out"],
-    [/\bencompass\b/gi, "include"],
-    [/\bsubstantial\b/gi, "big"],
-    [/\bnumerous\b/gi, "many"],
-    [/\bsignificant\b/gi, "major"],
-    [/\bsignificantly\b/gi, "a lot"],
-    [/\boptimal\b/gi, "best"],
-    [/\bparadigm\b/gi, "approach"],
-    [/\brobust\b/gi, "strong"],
-    [/\bseamlessly?\b/gi, "smoothly"],
-    [/\bcutting-edge\b/gi, "latest"],
-    [/\bstate-of-the-art\b/gi, "advanced"],
-    [/\bgroundbreaking\b/gi, "new"],
-    [/\bleverage\b/gi, "use"],
-    [/\bsynergy\b/gi, "teamwork"],
-    [/\bdelve\b/gi, "dig"],
-    [/\btapestry\b/gi, "mix"],
-    [/\bnuanced\b/gi, "complex"],
-    [/\bin today's (?:fast-paced |ever-changing |modern )?world\b/gi, "these days"],
-    [/\bin the realm of\b/gi, "in"],
-    [/\bthe fact that\b/gi, "that"],
-    [/\bdue to the fact that\b/gi, "because"],
-    [/\bin order to\b/gi, "to"],
-    [/\bwith regard to\b/gi, "about"],
-    [/\bwith respect to\b/gi, "about"],
-    [/\bprior to\b/gi, "before"],
-    [/\bsubsequent to\b/gi, "after"],
-    [/\ba wide range of\b/gi, "many"],
-    [/\ba variety of\b/gi, "various"],
-    [/\bthe majority of\b/gi, "most"],
-    [/\bplays a (?:crucial|vital|key|important|pivotal) role\b/gi, "matters a lot"],
-    [/\bhas the ability to\b/gi, "can"],
-    [/\bis able to\b/gi, "can"],
-    [/\bwas able to\b/gi, "could"],
-  ];
-  for (const [pattern, replacement] of wordSwaps) {
-    out = out.replace(pattern, replacement);
+  if (!isAcademic) {
+    const contractions = [
+      [/\bis not\b/g, "isn't"], [/\bare not\b/g, "aren't"], [/\bwas not\b/g, "wasn't"],
+      [/\bwere not\b/g, "weren't"], [/\bdo not\b/g, "don't"], [/\bdoes not\b/g, "doesn't"],
+      [/\bdid not\b/g, "didn't"], [/\bcannot\b/g, "can't"], [/\bcould not\b/g, "couldn't"],
+      [/\bwould not\b/g, "wouldn't"], [/\bshould not\b/g, "shouldn't"],
+      [/\bhave not\b/g, "haven't"], [/\bhas not\b/g, "hasn't"],
+      [/\bwill not\b/g, "won't"], [/\bit is\b/g, "it's"], [/\bthat is\b/g, "that's"],
+      [/\bthere is\b/g, "there's"], [/\bthey are\b/g, "they're"],
+      [/\bwe are\b/g, "we're"], [/\byou are\b/g, "you're"],
+    ];
+    for (const [pattern, replacement] of contractions) {
+      out = out.replace(pattern, (match) => Math.random() < 0.65 ? replacement : match);
+    }
   }
-
-  // Break long sentences
-  out = out.replace(
-    /([^.!?]{120,}?),\s+(and|but|which|so|however)\s+/g,
-    (match, before, conj) => `${before}. ${conj.charAt(0).toUpperCase() + conj.slice(1)} `
-  );
-
-  // Add em-dashes
-  out = out.replace(/,\s+(which (?:is|was|makes|means|allows|helps))\s+/g, " — $1 ");
-
-  // Contractions (~60% rate)
-  const contractions = [
-    [/\bis not\b/g, "isn't"], [/\bare not\b/g, "aren't"], [/\bwas not\b/g, "wasn't"],
-    [/\bwere not\b/g, "weren't"], [/\bdo not\b/g, "don't"], [/\bdoes not\b/g, "doesn't"],
-    [/\bdid not\b/g, "didn't"], [/\bcannot\b/g, "can't"], [/\bcould not\b/g, "couldn't"],
-    [/\bwould not\b/g, "wouldn't"], [/\bshould not\b/g, "shouldn't"],
-    [/\bhave not\b/g, "haven't"], [/\bhas not\b/g, "hasn't"], [/\bhad not\b/g, "hadn't"],
-    [/\bwill not\b/g, "won't"], [/\bit is\b/g, "it's"], [/\bthat is\b/g, "that's"],
-    [/\bthere is\b/g, "there's"], [/\bthey are\b/g, "they're"],
-    [/\bwe are\b/g, "we're"], [/\byou are\b/g, "you're"],
-  ];
-  for (const [pattern, replacement] of contractions) {
-    out = out.replace(pattern, (match) => Math.random() < 0.6 ? replacement : match);
-  }
-
-  // Remove passive voice
-  out = out
-    .replace(/\bIt can be seen that\b/gi, "Clearly,")
-    .replace(/\bIt has been (?:shown|demonstrated|proven|found)\b/gi, "Research shows")
-    .replace(/\bIt is (?:generally |widely |commonly |often )?believed\b/gi, "Most people think")
-    .replace(/\bIt is (?:generally |widely |commonly )?accepted\b/gi, "Most people agree")
-    .replace(/\bIt is (?:clear|evident|obvious) that\b/gi, "Clearly,")
-    .replace(/\bThis (?:clearly |obviously )?demonstrates\b/gi, "This shows")
-    .replace(/\bThis (?:clearly |obviously )?indicates\b/gi, "This means")
-    .replace(/\bThis (?:clearly |obviously )?suggests\b/gi, "This hints");
-
   // Vary paragraph openers
   const paragraphs = out.split(/\n\n+/);
-  const starterSwaps = [
-    ["The main ", "Mainly, the "],
-    ["The key ", "The big thing about "],
-    ["The primary ", "The main "],
-    ["The most important ", "What matters most is "],
-    ["The purpose of this ", "This "],
-    ["The goal of this ", "The aim here is to "],
-  ];
-  const result = paragraphs.map((para, i) => {
-    if (i === 0) return para;
+  const starters = isAcademic
+    ? [["The results ", "These findings "], ["The study ", "This research "], ["The data ", "These data "], ["The main ", "A primary "], ["The key ", "A central "]]
+    : [["The main ", "Mainly, the "], ["The key ", "One key "], ["The primary ", "A primary "], ["The most important ", "What matters most is "]];
+  const result = paragraphs.map((para, idx) => {
+    if (idx === 0) return para;
     let p = para;
-    for (const [from, to] of starterSwaps) {
+    for (const [from, to] of starters) {
       if (p.startsWith(from)) { p = to + p.slice(from.length); break; }
     }
     return p;
   });
-  return result.join("\n\n");
+  return result.join('\n\n');
 }
+
+/* ── Master post-processor ── */
+function postProcess(text, isAcademic) {
+  let out = text;
+  for (const [pattern, replaceFn] of PERPLEXITY_SWAPS) {
+    out = out.replace(pattern, replaceFn);
+  }
+  out = injectBurstiness(out);
+  out = injectLowProbTokens(out, isAcademic);
+  return out;
+}
+
+/* ══════════════════════════════════════════════════════════
+   FEATURE 5 — AI DETECTOR SCORE
+   Uses Sapling AI Detection API when SAPLING_API_KEY is set.
+   Falls back to a local heuristic scorer (perplexity/burstiness
+   proxy) when no key is configured, so the feature always works.
+══════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════
+   FEATURE 5 — AI DETECTOR SCORE
+   Uses Sapling AI Detection API when SAPLING_API_KEY is set.
+   Falls back to a local multi-signal ensemble scorer when no key
+   is configured. This isn't a trained classifier — it's a weighted
+   combination of the stylometric proxies the literature associates
+   with AI text (low burstiness, low lexical diversity, buzzword/
+   transition-word density, passive voice), each normalized to a
+   0-100 "AI-likelihood" contribution and combined with fixed
+   weights, similar in spirit to the multi-signal ensembles
+   described in DIPPER/RAID-style detector research. It is provided
+   as a directional signal, not a calibrated probability.
+══════════════════════════════════════════════════════════ */
+async function saplingDetect(text) {
+  const key = process.env.SAPLING_API_KEY;
+  if (!key) return null;
+  const resp = await fetch("https://api.sapling.ai/api/v1/aidetect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, text }),
+  });
+  if (!resp.ok) throw new Error(`Sapling API error: ${resp.status}`);
+  const data = await resp.json();
+  // Sapling returns a "score" between 0 (human) and 1 (AI)
+  const score = typeof data.score === "number" ? Math.round(data.score * 100) : null;
+  return score;
+}
+
+const BUZZWORD_PATTERN = /\b(furthermore|moreover|additionally|consequently|nevertheless|subsequently|utilize|facilitate|demonstrate|individuals|optimal|paradigm|robust|leverage|delve|nuanced|seamless|cutting-edge|state-of-the-art|tapestry|testament|pivotal|profound|undeniably|underscore|showcase|garner|fostering|vibrant|intricate|in conclusion|it is important to note|it is worth noting|plays a crucial role)\b/gi;
+const PASSIVE_PATTERN = /\b(is|are|was|were|been|being)\s+\w+ed\b/gi;
+
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+// ── Reliability thresholds ──
+// Detection on very short text is unreliable (not enough sentences to
+// measure burstiness/vocabulary variation), so scores below this length
+// are reported as "not enough text" rather than a confident percentage.
+const MIN_RELIABLE_WORDS = 50;
+
+// ── Fact-preservation guard ──
+// Numbers, dates, percentages, and citation-like fragments are the
+// cheapest, most objective thing to check before/after a rewrite. This
+// doesn't replace real semantic-similarity checking, but it catches the
+// most common and most damaging failure mode: a rewrite silently
+// changing a statistic or citation year while "sounding" more natural.
+function extractNumbers(text) {
+  return Array.from(new Set((text.match(/\d[\d,]*\.?\d*%?/g) || []).map(s => s.trim())));
+}
+
+// Rough word-overlap ratio between two passages, used as a cheap
+// semantic-drift guard: if a "second pass" rewrite barely shares any
+// vocabulary with the first pass, it's more likely to have drifted in
+// meaning than to have genuinely improved naturalness.
+function wordOverlapRatio(a, b) {
+  const wordsOf = (s) => new Set((s.toLowerCase().match(/[a-z']+/g) || []));
+  const wa = wordsOf(a);
+  const wb = wordsOf(b);
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let intersect = 0;
+  for (const w of wa) if (wb.has(w)) intersect++;
+  return intersect / Math.max(wa.size, wb.size);
+}
+
+// Core stylometric feature extraction — the same category of features
+// (sentence length distribution, vocabulary diversity, punctuation and
+// transition-word frequency) used by classical stylometric detectors.
+function extractStyloFeatures(text) {
+  const words = (text.match(/[A-Za-z']+/g) || []);
+  const wordCount = Math.max(1, words.length);
+  const uniqueWords = new Set(words.map(w => w.toLowerCase())).size;
+  const typeTokenRatio = uniqueWords / wordCount;
+
+  const sentences = splitSentences(text);
+  const sentCount = Math.max(1, sentences.length);
+  const lens = sentences.map(s => (s.match(/\S+/g) || []).length);
+  const meanLen = lens.reduce((a, b) => a + b, 0) / sentCount;
+  const variance = lens.reduce((a, b) => a + (b - meanLen) ** 2, 0) / sentCount;
+  const stdLen = Math.sqrt(variance);
+  // Coefficient of variation: burstiness proxy. Human writing tends to
+  // mix short/long sentences (higher CV); uniform AI output has low CV.
+  const burstinessCV = meanLen > 0 ? stdLen / meanLen : 0;
+
+  const buzzHits = (text.match(BUZZWORD_PATTERN) || []).length;
+  const buzzPer100Words = (buzzHits / wordCount) * 100;
+
+  const passiveHits = (text.match(PASSIVE_PATTERN) || []).length;
+  const passivePer100Words = (passiveHits / wordCount) * 100;
+
+  const contractionHits = (text.match(/\b\w+'\w+\b/g) || []).length;
+  const contractionPer100Words = (contractionHits / wordCount) * 100;
+
+  return { wordCount, sentCount, typeTokenRatio, meanLen, stdLen, burstinessCV, buzzPer100Words, passivePer100Words, contractionPer100Words };
+}
+
+function heuristicDetect(text) {
+  const f = extractStyloFeatures(text);
+
+  // Each sub-score is an independent 0-100 "AI-likelihood" contribution.
+  const burstinessScore = clamp(100 - f.burstinessCV * 140, 0, 100);          // low CV -> AI-like
+  const vocabScore = clamp(100 - f.typeTokenRatio * 140, 0, 100);             // low diversity -> AI-like
+  const buzzScore = clamp(f.buzzPer100Words * 18, 0, 100);
+  const passiveScore = clamp(f.passivePer100Words * 12, 0, 100);
+  const contractionRelief = clamp(f.contractionPer100Words * 5, 0, 35);
+
+  const weighted =
+    burstinessScore * 0.40 +
+    vocabScore * 0.25 +
+    buzzScore * 0.20 +
+    passiveScore * 0.15 -
+    contractionRelief;
+
+  const score = Math.round(clamp(weighted, 2, 98));
+
+  const breakdown = {
+    burstiness: { value: Number(f.burstinessCV.toFixed(2)), aiSignal: Math.round(burstinessScore), note: f.burstinessCV < 0.35 ? "Low sentence-length variation (AI-like)" : "Healthy sentence-length variation" },
+    vocabularyDiversity: { value: Number(f.typeTokenRatio.toFixed(2)), aiSignal: Math.round(vocabScore), note: f.typeTokenRatio < 0.55 ? "Repetitive word choice" : "Varied vocabulary" },
+    buzzwordDensity: { value: Number(f.buzzPer100Words.toFixed(1)), aiSignal: Math.round(buzzScore), note: f.buzzPer100Words > 1 ? "Frequent AI-associated transition words" : "Few AI-associated transition words" },
+    passiveVoice: { value: Number(f.passivePer100Words.toFixed(1)), aiSignal: Math.round(passiveScore), note: f.passivePer100Words > 1.5 ? "Notable passive-voice usage" : "Mostly active voice" },
+  };
+
+  // Confidence reflects how far the score sits from the 50/50 midpoint —
+  // scores near the middle mean the signals disagreed with each other.
+  const distanceFromMid = Math.abs(score - 50);
+  const confidence = distanceFromMid >= 30 ? "High" : distanceFromMid >= 15 ? "Moderate" : "Low";
+
+  return { score, breakdown, confidence };
+}
+
+app.post("/detect-score", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!isProOrUnlimited(user.plan)) {
+      return res.status(403).json({ message: "AI detector score is available on Pro and Unlimited plans only.", upgradeRequired: true });
+    }
+    const { text } = req.body;
+    if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short to score." });
+
+    // Detection on short passages is unreliable — there aren't enough
+    // sentences to measure sentence-length variation or vocabulary
+    // diversity meaningfully. Say so instead of returning a falsely
+    // confident number.
+    const wordCount = (text.match(/\S+/g) || []).length;
+    if (wordCount < MIN_RELIABLE_WORDS) {
+      return res.json({
+        score: null,
+        label: "Not enough text for a reliable estimate",
+        reliable: false,
+        minWords: MIN_RELIABLE_WORDS,
+        wordCount,
+        source: "n/a",
+      });
+    }
+
+    let score, breakdown = null, confidence = null;
+    let source = "heuristic";
+    try {
+      const saplingScore = await saplingDetect(text);
+      if (saplingScore !== null) { score = saplingScore; source = "sapling"; }
+    } catch (e) {
+      console.warn("Sapling detect failed, falling back to heuristic:", e.message);
+    }
+    if (score === undefined) {
+      const result = heuristicDetect(text);
+      score = result.score;
+      breakdown = result.breakdown;
+      confidence = result.confidence;
+    }
+
+    // Hedged, probabilistic wording rather than an accusatory label —
+    // a detector score is evidence, not proof of who wrote something.
+    let label = "More consistent with human-written text";
+    if (score >= 70) label = "More consistent with AI-generated text";
+    else if (score >= 30) label = "Mixed / uncertain signals";
+
+    res.json({ score, label, source, breakdown, confidence, reliable: true, wordCount });
+  } catch (err) {
+    console.error("Detect score error:", err);
+    res.status(500).json({ message: "Could not compute AI detection score." });
+  }
+});
+
+/* ── Per-sentence scoring, used to highlight which parts of the
+   output still read as AI-generated so they can be targeted with
+   the sentence rewriter. Sapling's per-sentence scores are used
+   when available; otherwise a local heuristic scores each sentence
+   against its paragraph so scoring stays instant and free. ── */
+function heuristicSentenceScore(sentence, allSentences) {
+  const words = sentence.trim().split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  if (wordCount === 0) return 0;
+
+  const lens = allSentences.map(s => s.split(/\s+/).filter(Boolean).length);
+  const mean = lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length);
+  const deviation = Math.abs(wordCount - mean);
+  // Sentences that sit close to the paragraph's average length look
+  // uniform — a hallmark of unedited AI output (low burstiness).
+  const uniformityScore = Math.max(0, 40 - deviation * 4);
+
+  const buzzwords = /\b(furthermore|moreover|additionally|consequently|nevertheless|subsequently|utilize|facilitate|demonstrate|individuals|optimal|paradigm|robust|leverage|delve|nuanced|seamless|cutting-edge|tapestry|testament|pivotal|profound|undeniably)\b/gi;
+  const buzzHits = (sentence.match(buzzwords) || []).length;
+  const buzzScore = Math.min(35, buzzHits * 18);
+
+  const passivePattern = /\b(is|are|was|were|been|being)\s+\w+ed\b/gi;
+  const passiveHits = (sentence.match(passivePattern) || []).length;
+  const passiveScore = Math.min(15, passiveHits * 8);
+
+  const hasContraction = /\b\w+'\w+\b/.test(sentence);
+  const hasCasual = /\b(honestly|actually|really|basically|kinda|gonna|yeah|tbh|in practice|to be fair)\b/i.test(sentence);
+  const humanRelief = (hasContraction ? 15 : 0) + (hasCasual ? 15 : 0);
+  const startsWithAndBut = /^(and|but)\b/i.test(sentence.trim());
+
+  const raw = uniformityScore + buzzScore + passiveScore - humanRelief - (startsWithAndBut ? 10 : 0);
+  return Math.max(2, Math.min(97, Math.round(raw)));
+}
+
+app.post("/detect-score-sentences", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!isProOrUnlimited(user.plan)) {
+      return res.status(403).json({ message: "Sentence-level AI highlighting is available on Pro and Unlimited plans only.", upgradeRequired: true });
+    }
+    const { text } = req.body;
+    if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short to score." });
+
+    const sentences = splitSentences(text);
+    if (sentences.length === 0) return res.json({ sentences: [], reliable: true });
+
+    // With too few words, sentence-length variation and paragraph averages
+    // aren't meaningful — return the sentences unscored rather than
+    // highlighting them based on noise.
+    const totalWords = (text.match(/\S+/g) || []).length;
+    if (totalWords < MIN_RELIABLE_WORDS) {
+      return res.json({ sentences: sentences.map(s => ({ sentence: s, score: null })), reliable: false, minWords: MIN_RELIABLE_WORDS });
+    }
+
+    // Try Sapling's per-sentence scoring first (score_sentences flag),
+    // fall back to the local heuristic per sentence if unavailable.
+    let scored = null;
+    const key = process.env.SAPLING_API_KEY;
+    if (key) {
+      try {
+        const resp = await fetch("https://api.sapling.ai/api/v1/aidetect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, text, score_sentences: true }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (Array.isArray(data.sentence_scores) && data.sentence_scores.length === sentences.length) {
+            scored = sentences.map((s, i) => ({ sentence: s, score: Math.round(data.sentence_scores[i] * 100) }));
+          }
+        }
+      } catch (e) {
+        console.warn("Sapling sentence-level detect failed, falling back to heuristic:", e.message);
+      }
+    }
+    if (!scored) {
+      scored = sentences.map(s => ({ sentence: s, score: heuristicSentenceScore(s, sentences) }));
+    }
+
+    res.json({ sentences: scored, reliable: true });
+  } catch (err) {
+    console.error("Detect sentence scores error:", err);
+    res.status(500).json({ message: "Could not compute sentence-level AI scores." });
+  }
+});
+
+/* ══════════════════════════════════════════════════════════
+   FEATURE 6 — SENTENCE-LEVEL REWRITER
+   Rewrites a single sentence in place, using surrounding
+   context so the tone stays consistent with the paragraph.
+══════════════════════════════════════════════════════════ */
+app.post("/rewrite-sentence", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!isProOrUnlimited(user.plan)) {
+      return res.status(403).json({ message: "Sentence rewriting is available on Pro and Unlimited plans only.", upgradeRequired: true });
+    }
+    const { sentence, context = "", mode = "standard" } = req.body;
+    if (!sentence || sentence.trim().length < 2) return res.status(400).json({ message: "No sentence provided." });
+
+    const modelInstance = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      systemInstruction: `You rewrite a single sentence so it reads naturally and human-written, in a ${mode} tone. Vary sentence structure and word choice from the original. Keep the same meaning and any facts, numbers, or names exactly. Output ONLY the rewritten sentence — no quotes, no explanation, no extra sentences.`,
+    });
+
+    const prompt = [
+      context ? `Paragraph context (for tone/flow only, do not rewrite this):\n${context}\n` : "",
+      `Rewrite ONLY this sentence:\n${sentence}`,
+    ].join("\n");
+
+    const result = await modelInstance.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 1.1, topP: 0.95, topK: 40 },
+    });
+
+    const rewritten = stripAiFormatting(result.response.text());
+    res.json({ rewritten });
+  } catch (err) {
+    console.error("Rewrite sentence error:", err);
+    res.status(500).json({ message: "Could not rewrite sentence. Please try again." });
+  }
+});
 
 /* ── HEALTH ── */
 app.get("/", (req, res) => res.send("AI Humaniser backend is running! ✦"));
@@ -389,6 +654,251 @@ app.get("/me", authMiddleware, async (req, res) => {
 });
 
 /* ── HUMANISE ── */
+// ── Shared humanise pipeline ──
+// Used by both the authenticated /humanise route and the public
+// /guest/humanise trial route, so the two never drift out of sync.
+async function humaniseText(text, mode = "standard") {
+    const isAcademic = mode === "academic" || mode === "professional";
+
+    const modePrompts = {
+      standard: "natural, conversational, easy to read, using normal everyday words",
+      professional: "professional, clear, and direct — avoiding business jargon and AI buzzwords",
+      academic: "scholarly and analytical, written like an expert human academic, avoiding robotic transition words",
+      creative: "vivid and expressive, using a storytelling style with rich voice",
+      casual: "highly informal, like talking to a friend, using contractions and simple phrasing",
+    };
+    const toneDesc = modePrompts[mode] || modePrompts.standard;
+
+    let systemInstruction = "";
+    let userPrompt = "";
+
+    if (isAcademic) {
+      systemInstruction = `You are a human academic writer rewriting AI-generated text to pass Turnitin and GPTZero AI detection.
+
+WHAT DETECTORS MEASURE — attack all three:
+
+1. BURSTINESS (most important for academic):
+Academic AI text is extremely uniform — every sentence is 18-22 words. Real academics vary dramatically.
+MANDATORY pattern per paragraph:
+- 1 short analytical punch (6-10 words): "This finding challenges prior assumptions."
+- 1-2 medium explanatory sentences (14-20 words)  
+- 1 long complex argument (24-35 words with subordinate clauses)
+NEVER allow 3+ sentences of similar length.
+
+2. PERPLEXITY — use unexpected academic word choices:
+- Instead of "demonstrate" → "show" or "reveal" or "confirm"
+- Instead of "utilize" → "use" or "apply" or "employ"
+- Instead of "significant" → "notable" or "marked" or "considerable"
+- Instead of "it has been shown that" → "research confirms" or "studies show" or "evidence points to"
+- Instead of "in conclusion" → "taken together" or "overall" or "in sum"
+- Instead of "furthermore" → "beyond this" or "building on this" or "relatedly"
+- Instead of "consequently" → "as a result" or "this led to" or "because of this"
+
+3. ACTIVE VOICE — passive voice = low perplexity score:
+- "it was found that X" → "the study found X"
+- "it is believed that" → "scholars argue" or "researchers suggest"
+- "it has been shown" → "evidence shows" or "data confirm"
+
+STRICT RULES:
+- No contractions (formal register)
+- NEVER alter, round, or rephrase any number, percentage, date, statistic, or citation — copy every digit and figure exactly as given in the source text
+- No em-dashes or en-dashes
+- No AI buzzwords: furthermore, moreover, additionally, consequently, utilize, facilitate, demonstrate, individuals, paradigm, robust, leverage, delve, nuanced, tapestry, testament, pivotal
+- Output ONLY the rewritten text`;
+
+      userPrompt = [
+        "Rewrite this academic text to score below 20% on Turnitin and GPTZero AI detectors.",
+        "",
+        "MANDATORY burstiness pattern (count words per sentence):",
+        "- Every paragraph must have: 1 short sentence (6-10 words) + 1-2 medium sentences + 1 long sentence (24-35 words)",
+        "- If you find 3 consecutive sentences between 15-22 words, you MUST break the pattern",
+        "",
+        "MANDATORY perplexity boosters:",
+        "- Replace every instance of: furthermore, moreover, consequently, utilize, demonstrate, individuals, it has been shown, it is believed, it was found",
+        "- Convert at least 2 passive voice constructions to active voice per paragraph",
+        "- Use at least 1 unexpected transition per paragraph (not: therefore, thus, hence)",
+        "",
+        "Keep all citations, data, and arguments exactly accurate.",
+        "No contractions. Formal register only.",
+        "Output ONLY the rewritten text.",
+        "",
+        "Text:",
+        text
+      ].join("\n");
+    } else {
+      systemInstruction = `You are a human editor rewriting AI text to sound like a real person wrote it.
+
+YOUR ONLY JOB: Make the text score below 20% on AI detectors. You do this by attacking the three things detectors measure: perplexity, burstiness, and token probability.
+
+BURSTINESS RULES (most important):
+- Count the words in each sentence. If 3 or more consecutive sentences are between 12-22 words, you MUST break this pattern.
+- After every 2-3 medium sentences, add either: one very short sentence (3-6 words) OR one long sentence (25-35 words).
+- Example bad (AI): "Technology has changed how we work. It affects many aspects of daily life. People use it every day."
+- Example good (human): "Technology changed everything. It now affects how we work, how we learn, how we communicate, and even how we rest at night. Crazy, right?"
+
+PERPLEXITY RULES (second most important):
+- Replace predictable word choices with unexpected ones.
+- Instead of "significant" use "real" or "actual" or "pretty big"
+- Instead of "demonstrate" use "show" or "prove"  
+- Instead of "obtain" use "get"
+- Instead of "sufficient" use "enough"
+- Add one unexpected word or phrase per paragraph that a detector would not predict.
+
+TOKEN PROBABILITY RULES:
+- Use contractions: don't, it's, can't, won't, they're, you'll
+- Start 1-2 sentences with "And" or "But" — humans do this, AI avoids it
+- Add one casual aside per paragraph like "honestly", "actually", "in practice", or "to be fair"
+- Use simple words over complex ones everywhere possible
+
+BANNED WORDS (zero tolerance): furthermore, moreover, additionally, consequently, nevertheless, subsequently, utilize, facilitate, demonstrate, individuals, optimal, paradigm, robust, leverage, delve, nuanced, seamless, cutting-edge, tapestry, testament, beacon, pivotal, underscore, showcase, garner, fostering, vibrant, intricate
+
+FACTS ARE OFF LIMITS: Never alter, round, or rephrase any number, percentage, date, statistic, name, or citation. Copy every digit and figure exactly as given — style changes are fine, factual changes are not.
+
+TONE: ${toneDesc}
+OUTPUT: Rewritten text only. No intro. No explanation.`;
+
+      userPrompt = [
+        "Rewrite this text so it scores below 20% on AI detectors.",
+        "",
+        "MANDATORY sentence length pattern — count words carefully:",
+        "- Short sentence (3-6 words): at least 2 per paragraph",  
+        "- Medium sentence (12-20 words): 2-3 per paragraph",
+        "- Long sentence (22-35 words): at least 1 per paragraph",
+        "- NEVER have 3+ sentences of similar length in a row",
+        "",
+        "MANDATORY human signals:",
+        "- Use contractions: don't, it's, can't, won't",
+        "- Start at least 1 sentence with 'And' or 'But'",
+        "- Add 1 casual word per paragraph: honestly / actually / really / in practice",
+        "- Use simple vocabulary — if a simpler word exists, use it",
+        "",
+        "ZERO TOLERANCE banned words: furthermore, moreover, additionally, consequently, utilize, facilitate, demonstrate, individuals, optimal, paradigm, robust, leverage, delve, nuanced, seamless, tapestry, testament, pivotal",
+        "",
+        "Text:",
+        text
+      ].join("\n");
+    }
+
+    const rawText = await generateWithRetries(systemInstruction, userPrompt, 1.25);
+
+    // Numbers/dates/percentages in the ORIGINAL input — the objective
+    // ground truth we check every pass against. Rewriting should never
+    // silently change a statistic or citation year.
+    const originalNumbers = extractNumbers(text);
+
+    // Apply post-processing to attack detector pillars
+    const raw = stripAiFormatting(rawText);
+    let humanised = postProcess(raw, isAcademic);
+    let passesUsed = 1;
+
+    // ── Second pass: if the draft still scores as detectable, send it back
+    // with a targeted list of exactly what's still wrong (mirrors the
+    // "structural scrambling / purge AI-speak" workflow from detector
+    // research) instead of just accepting a single-shot rewrite.
+    //
+    // Guard rail: this pass is optimizing against OUR OWN heuristic
+    // scorer, which is exactly the "detector-rewriter overfitting" trap —
+    // a rewrite can chase a lower score by drifting away from the
+    // original meaning or quietly dropping numbers/citations. So a
+    // revision is only accepted if it (a) scored better, (b) still
+    // shares enough vocabulary with the first-pass draft, (c) didn't
+    // balloon or shrink drastically in length, and (d) didn't lose any
+    // number that survived the first pass.
+    try {
+      const preCheck = heuristicDetect(humanised);
+      if (preCheck.score >= 30) {
+        const problems = [];
+        if (preCheck.breakdown.burstiness.aiSignal > 45) {
+          problems.push("- Sentence lengths are still too uniform. Aggressively vary rhythm: mix short punchy sentences (5-8 words) with longer, complex ones (25+ words). Never allow 3 sentences of similar length in a row.");
+        }
+        if (preCheck.breakdown.vocabularyDiversity.aiSignal > 45) {
+          problems.push("- Word choice is repetitive. Replace repeated words with varied, natural alternatives — but never sacrifice meaning for a fancier word.");
+        }
+        if (preCheck.breakdown.buzzwordDensity.aiSignal > 25) {
+          problems.push("- Still contains AI-associated stock phrases (furthermore, moreover, additionally, in conclusion, it is important to note, plays a crucial role, etc). Remove every one of them.");
+        }
+        if (preCheck.breakdown.passiveVoice.aiSignal > 25) {
+          problems.push("- Too much passive voice. Convert passive constructions ('it was found that', 'is considered to be') to direct active voice.");
+        }
+        if (problems.length === 0) {
+          problems.push("- The overall rhythm and word choice still read as machine-generated. Rework the phrasing so it sounds like a specific person wrote it, not a template.");
+        }
+
+        const critiqueSystem = `You are a meticulous human copy-editor doing a second pass on a draft that still reads as AI-written. Fix ONLY the specific problems listed. Preserve the exact meaning, all facts, numbers, names, and citations — never alter a digit or figure. Do not shorten the text significantly. Output ONLY the revised passage — no preamble, no explanation.`;
+        const critiquePrompt = [
+          "This passage still shows signs of AI-generated writing. Specific problems to fix:",
+          "",
+          problems.join("\n"),
+          "",
+          "Passage:",
+          humanised,
+        ].join("\n");
+
+        const revisedRaw = await generateWithRetries(critiqueSystem, critiquePrompt, 1.15);
+        const revised = postProcess(stripAiFormatting(revisedRaw), isAcademic);
+        const postCheck = heuristicDetect(revised);
+
+        const overlap = wordOverlapRatio(humanised, revised);
+        const wordsBefore = Math.max(1, (humanised.match(/\S+/g) || []).length);
+        const wordsAfter = (revised.match(/\S+/g) || []).length;
+        const lengthRatio = wordsAfter / wordsBefore;
+        const pass1MissingNumbers = originalNumbers.filter(n => !humanised.includes(n));
+        const revisedMissingNumbers = originalNumbers.filter(n => !revised.includes(n));
+
+        const scoredBetter = postCheck.score < preCheck.score;
+        const meaningPreserved = overlap >= 0.5 && lengthRatio >= 0.75 && lengthRatio <= 1.3;
+        const noNewNumberLoss = revisedMissingNumbers.length <= pass1MissingNumbers.length;
+
+        if (scoredBetter && meaningPreserved && noNewNumberLoss) {
+          humanised = revised;
+          passesUsed = 2;
+        } else if (scoredBetter && !meaningPreserved) {
+          console.warn("Second humanise pass scored better but drifted too far from the source (overlap/length check failed) — keeping first-pass result.");
+        }
+      }
+    } catch (e) {
+      console.warn("Second humanise pass failed, keeping first-pass result:", e.message);
+    }
+
+    // Final fact-check: did any number from the original input go missing
+    // in whichever version we're about to return? Surfaced to the UI as a
+    // caution note rather than silently trusting the rewrite.
+    const missingNumbers = originalNumbers.filter(n => !humanised.includes(n));
+    const factCheck = { numbersPreserved: missingNumbers.length === 0, missingNumbers };
+
+  return { humanised, passesUsed, factCheck };
+}
+
+// Shared error classification for generation failures — used by both
+// the authenticated and guest humanise routes.
+function sendGenerationError(err, res) {
+  console.error("Humanise error after retries:", err);
+
+  const isServiceUnavailable = err.status === 503 ||
+    (err.message && (
+      err.message.includes("503") ||
+      err.message.toLowerCase().includes("service unavailable") ||
+      err.message.toLowerCase().includes("high demand") ||
+      err.message.toLowerCase().includes("overloaded")
+    ));
+  if (isServiceUnavailable) {
+    return res.status(503).json({ message: "Gemini AI service is temporarily experiencing high demand. Please try again in a few seconds." });
+  }
+
+  const isQuotaExceeded = err.status === 429 ||
+    (err.message && (
+      err.message.includes("429") ||
+      err.message.toLowerCase().includes("quota") ||
+      err.message.toLowerCase().includes("rate limit") ||
+      err.message.toLowerCase().includes("resource exhausted")
+    ));
+  if (isQuotaExceeded) {
+    return res.status(429).json({ message: "Gemini API Rate Limit exceeded. Please check your Google AI Studio billing balance." });
+  }
+
+  res.status(500).json({ message: "AI processing error. Please try again." });
+}
+
 app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
   try {
     const { text, mode = "standard" } = req.body;
@@ -398,167 +908,63 @@ app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
     const words = text.trim().split(/\s+/);
     if (words.length > wordLimit) return res.status(400).json({ message: `Word limit exceeded. Your plan allows ${wordLimit} words per request.` });
 
-    const isAcademic = mode === "academic" || mode === "professional";
-    const isPremium = ["pro", "unlimited"].includes(req.user.plan?.toLowerCase());
-
-    // toneDesc used in prompts — must be defined before prompt1
-    const modePrompts = {
-      standard: "natural, conversational, easy to read",
-      professional: "professional and polished — suitable for reports and formal documents",
-      academic: "formal academic — suitable for university assignments and research",
-      creative: "vivid, expressive, with personality",
-      casual: "informal, like texting a smart friend",
-    };
-    const toneDesc = modePrompts[mode] || modePrompts.standard;
-
-    // Academic mode uses a completely different strategy:
-    // preserve formal vocabulary, keep structure, only change AI-detector patterns
-    const prompt1 = isAcademic ? [
-      `You are a human ${mode === "professional" ? "professional" : "student"} who wrote this for a ${mode === "professional" ? "workplace report" : "university assignment"}. Your writing is natural but academic.`,
-      "",
-      "Rewrite this AI-generated text so it scores 0% on Quillbot, Turnitin, and GPTZero — while staying fully academic.",
-      "",
-      "The #1 AI detector signal: every sentence has the same rhythm and length. You MUST break this.",
-      "",
-      "REQUIRED — do ALL of these:",
-      "1. VARY sentence length dramatically — mix short (5-8 words), medium (12-18 words), and long (20-30 words) sentences",
-      "2. START paragraphs differently — not every paragraph starts with 'The' or 'This'. Use: 'Notably,', 'As such,', 'When examining...', 'A key concern here is...', 'What emerges from this...'",
-      "3. BREAK perfect 3-sentence paragraph structure — some paragraphs 1-2 sentences, some 5-6",
-      "4. REPLACE these AI clichés completely:",
-      "   - 'it is worth noting' → 'notably' or 'importantly'",
-      "   - 'furthermore' / 'moreover' → 'beyond this' or 'building on this'",
-      "   - 'in conclusion' → 'taken together' or 'overall'",
-      "   - 'it can be seen that' → state the observation directly",
-      "   - 'in today\'s world' / 'in modern society' → 'currently' or 'in recent years'",
-      "   - 'plays a crucial/vital role' → 'is central to' or 'directly affects'",
-      "   - 'it is important to note' → just say it directly",
-      "   - 'individuals' → 'people', 'students', or 'researchers' (be specific)",
-      "   - 'utilize' → 'use'",
-      "   - 'demonstrate' → 'show' or 'reveal'",
-      "   - 'Consequently,' at sentence start → rephrase the whole sentence",
-      "   - 'Therefore,' at sentence start → rephrase or use 'As a result,'",
-      "5. USE one em-dash (—) somewhere for natural emphasis",
-      "6. CONVERT passive voice: 'it has been shown' → 'research shows', 'it was found' → 'the study found'",
-      "7. MAKE AT LEAST ONE paragraph just 1-2 sentences long",
-      "",
-      "KEEP:",
-      "- Third-person voice — no 'I' or 'we'",
-      "- No contractions — academic writing avoids these",
-      "- All facts, data, statistics exactly as stated",
-      "- Any citations exactly as they appear",
-      "- Formal register — no slang",
-      "",
-      "Output ONLY the rewritten text. No intro. No explanation.",
-      "",
-      "Text:",
-      text,
-    ].join("\n") : [
-      "You are a real human writer. Rewrite this AI text to score 0% on AI detectors.",
-      "",
-      "DESTROY these AI patterns:",
-      "- Uniform sentence lengths — mix very short (3-6 words) with longer ones",
-      "- Perfect paragraph structure — break it up, one paragraph can be 1 sentence",
-      "- Formal transitions — never use: furthermore, moreover, additionally, consequently, in conclusion",
-      "- Passive voice — never use: it can be seen, it has been shown, it is worth noting",
-      "- AI vocabulary — never use: utilize, individuals, demonstrate, facilitate, paradigm, robust, seamless, leverage, delve, tapestry, nuanced, cutting-edge, in today's world",
-      "",
-      "DO these human things:",
-      "- Start 1-2 sentences with And, But, or So",
-      "- Add one sentence fragment. Just one. Like: And that's the thing.",
-      "- Use contractions: don't, it's, you'll, wasn't, they're, we've",
-      "- Include one small personal-sounding aside",
-      "- Keep ALL facts — do not add or remove information",
-      "",
-      "Output ONLY the rewritten text. No intro. No quotes.",
-      "",
-      "Text:",
-      text,
-    ].join("\n");
-
-    const pass1Result = await model.generateContent(prompt1);
-    const pass1 = stripAiFormatting(pass1Result.response.text());
-
-    // ── PASS 2: targeted sentence-level fix ──────────────────────
-    const prompt2Lines = isAcademic ? [
-      "You are a human editor reviewing a university assignment draft.",
-      "Read each sentence. If it sounds like it was written by AI, rewrite just that sentence.",
-      "",
-      "Signs a sentence is AI-written (fix these):",
-      "- Starts with: 'Furthermore,', 'Moreover,', 'Additionally,', 'Consequently,', 'Nevertheless,', 'Subsequently,'",
-      "- Uses: 'it is worth noting', 'it should be noted', 'it is important to note', 'it can be seen that'",
-      "- Uses: 'plays a crucial/vital/pivotal role', 'in today\'s world', 'in modern society'",
-      "- Every sentence in a paragraph is the same length",
-      "- Passive voice: 'has been shown', 'can be seen', 'it was found'",
-      "",
-      "When rewriting:",
-      "- Keep academic register — no contractions, no slang",
-      "- Vary the sentence length from surrounding sentences",
-      "- Start the sentence differently from how AI would start it",
-      "- Keep all facts exactly the same",
-      "",
-      "Output ONLY the full corrected text.",
-      "",
-      "Text:",
-      pass1,
-    ] : [
-      "Read this text carefully. Find every sentence that still sounds AI-generated and rewrite just those sentences.",
-      "",
-      "AI sentence red flags:",
-      "- Formal connectors at start: 'Furthermore,', 'Moreover,', 'Additionally,', 'Consequently,'",
-      "- Clichés: 'it is worth noting', 'plays a crucial role', 'in today\'s fast-paced world'",
-      "- Passive: 'it has been shown', 'it can be seen', 'it was found that'",
-      "- Same length as all surrounding sentences",
-      "- Sounds like a textbook or corporate memo",
-      "",
-      "Rewrite AI sentences only. Leave human-sounding ones alone.",
-      `Keep tone: ${toneDesc}.`,
-      "Output ONLY the full improved text.",
-      "",
-      "Text:",
-      pass1,
-    ];
-
-    const pass2Result = await model.generateContent(prompt2Lines.join("\n"));
-    const pass2 = stripAiFormatting(pass2Result.response.text());
-
-    // ── PASS 3: statistical variability injection ─────────────────
-    // This breaks the uniform perplexity/burstiness patterns detectors measure
-    const prompt3Lines = [
-      "You are rewriting a piece of text to make it sound MORE like a human wrote it.",
-      "",
-      "Do these specific things to the text below:",
-      "1. Find the 2-3 LONGEST sentences and split each into two shorter ones",
-      "2. Find the 2-3 SHORTEST sentences and merge each with the next sentence",
-      "3. Add ONE parenthetical aside somewhere — like (which is particularly relevant here) or (a finding consistent with earlier research)",
-      isAcademic
-        ? "4. Change one sentence to start with a number: 'Three key factors...' or 'Two distinct patterns...'"
-        : "4. Add one dash (—) in a sentence for natural emphasis",
-      "5. Make sure no two consecutive sentences start with the same word",
-      "",
-      "Do NOT change the meaning. Do NOT add new facts.",
-      isAcademic
-        ? "Keep academic register — no contractions."
-        : "Keep the same tone as the existing text.",
-      "Output ONLY the rewritten text.",
-      "",
-      "Text:",
-      pass2,
-    ];
-
-    const pass3Result = await model.generateContent(prompt3Lines.join("\n"));
-    const pass3 = stripAiFormatting(pass3Result.response.text());
-
-    // ── Final rule-based injection ────────────────────────────────
-    const humanised = isAcademic
-      ? injectAcademicVariability(pass3)
-      : injectHumanVariability(pass3);
+    const { humanised, passesUsed, factCheck } = await humaniseText(text, mode);
 
     const saved = await Text.create({ userId: req.user.id, input: text, output: humanised, mode });
     await User.findByIdAndUpdate(req.user.id, { $inc: { dailyCount: 1 } });
-    res.json({ humanised, savedId: saved._id, usage: req.usage });
+    res.json({ humanised, savedId: saved._id, usage: req.usage, passesUsed, factCheck });
   } catch (err) {
-    console.error("Humanise error:", err);
-    res.status(500).json({ message: "AI processing error. Please try again." });
+    sendGenerationError(err, res);
+  }
+});
+
+/* ── GUEST TRIAL — no account required, limited tries ──
+   Lets people try the tool before signing up. Usage is tracked
+   server-side per guestId (a UUID the frontend generates and stores in
+   localStorage) rather than trusted purely client-side, so clearing
+   localStorage alone doesn't reset the trial as long as the guestId
+   cookie/value persists — a determined user could still work around
+   this by clearing everything and getting a new ID, which is an
+   accepted tradeoff for a frictionless trial rather than requiring
+   IP tracking or device fingerprinting. ── */
+const GUEST_TRY_LIMIT = 5;
+const GUEST_WORD_LIMIT = 300;
+
+app.post("/guest/humanise", async (req, res) => {
+  try {
+    const { text, mode = "standard" } = req.body;
+    if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short (min 5 chars)" });
+
+    const guestId = req.headers["x-guest-id"] || req.body.guestId;
+    if (!guestId || typeof guestId !== "string" || guestId.length < 8) {
+      return res.status(400).json({ message: "Missing guest id." });
+    }
+
+    const words = text.trim().split(/\s+/);
+    if (words.length > GUEST_WORD_LIMIT) {
+      return res.status(400).json({ message: `Free trial is limited to ${GUEST_WORD_LIMIT} words per request. Create a free account for higher limits.` });
+    }
+
+    let guest = await GuestUsage.findOne({ guestId });
+    if (!guest) guest = await GuestUsage.create({ guestId, count: 0 });
+
+    if (guest.count >= GUEST_TRY_LIMIT) {
+      return res.status(403).json({
+        message: "You've used all your free tries. Create a free account to keep going.",
+        limitReached: true,
+        usage: { used: guest.count, limit: GUEST_TRY_LIMIT },
+      });
+    }
+
+    const { humanised, passesUsed, factCheck } = await humaniseText(text, mode);
+
+    guest.count += 1;
+    guest.lastUsedAt = new Date();
+    await guest.save();
+
+    res.json({ humanised, passesUsed, factCheck, usage: { used: guest.count, limit: GUEST_TRY_LIMIT } });
+  } catch (err) {
+    sendGenerationError(err, res);
   }
 });
 
@@ -567,7 +973,7 @@ app.post("/upload-file", authMiddleware, upload.single("file"), async (req, res)
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
-    if (!["pro", "unlimited"].includes(user.plan?.toLowerCase())) {
+    if (!isProOrUnlimited(user.plan)) {
       return res.status(403).json({ message: "File upload is available on Pro and Unlimited plans only.", upgradeRequired: true });
     }
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
@@ -636,7 +1042,7 @@ app.delete("/history/:id", authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ message: "Error" }); }
 });
 
-/* ── START ── */
+/* ── START SERVER ── */
 const PORT = process.env.PORT || 5000;
 connectDB()
   .then(() => app.listen(PORT, () => console.log(`✦ Server running on http://localhost:${PORT}`)))
