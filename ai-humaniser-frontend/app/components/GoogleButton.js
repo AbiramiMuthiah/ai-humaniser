@@ -36,7 +36,18 @@ export default function GoogleButton({ onDone }) {
             alert(e?.response?.data?.message || "Google login failed");
           }
         }}
-        onError={() => alert("Google login failed")}
+        onError={() => {
+          // Most Google login failures here are caused by an ad blocker or
+          // privacy extension blocking the sign-in popup, not an actual
+          // Google/account error. Give people a way to self-resolve instead
+          // of a generic dead-end message.
+          alert(
+            "Google sign-in didn't open. This is usually caused by an ad blocker " +
+            "or privacy extension blocking the sign-in popup.\n\n" +
+            "Try disabling it for this site, use a private/incognito window, " +
+            "or sign in with your email and password instead."
+          );
+        }}
         useOneTap={false}
         theme="outline"
         size="large"
