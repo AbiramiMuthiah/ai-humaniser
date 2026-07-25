@@ -1715,44 +1715,53 @@ function DashboardContent() {
               )}
 
               {/* Humanise button + limit info — sits right under the editor, not below the analysis panel */}
-              <div className="footerRow">
-                <div style={{ fontSize: 12, color: "var(--muted2)" }}>
-                  {isGuest ? (
-                    guestUsed >= GUEST_TRY_LIMIT ? (
-                      <span style={{ color: "rgba(255,209,102,0.95)" }}>
-                        Free trial complete.{" "}
-                        <a href="/register" style={{ color: "#ffd166", fontWeight: 700 }}>Create a free account</a> to keep humanising.
+              <div className="footerRow" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ fontSize: 12, color: "var(--muted2)" }}>
+                    {isGuest ? (
+                      guestUsed >= GUEST_TRY_LIMIT ? (
+                        <span style={{ color: "rgba(255,209,102,0.95)" }}>
+                          Free trial complete.{" "}
+                          <a href="/register" style={{ color: "#ffd166", fontWeight: 700 }}>Create a free account</a> to keep humanising.
+                        </span>
+                      ) : (
+                        <span>{GUEST_TRY_LIMIT - guestUsed} free {GUEST_TRY_LIMIT - guestUsed === 1 ? "try" : "tries"} left — sign up anytime to save your history.</span>
+                      )
+                    ) : remaining === 0 ? (
+                      <span style={{ color: "rgba(255,120,120,0.95)" }}>
+                        Daily limit reached.{" "}
+                        <a href="/pricing" style={{ color: "#a78bfa", fontWeight: 700 }}>Upgrade →</a>
                       </span>
                     ) : (
-                      <span>{GUEST_TRY_LIMIT - guestUsed} free {GUEST_TRY_LIMIT - guestUsed === 1 ? "try" : "tries"} left — sign up anytime to save your history.</span>
-                    )
-                  ) : remaining === 0 ? (
-                    <span style={{ color: "rgba(255,120,120,0.95)" }}>
-                      Daily limit reached.{" "}
-                      <a href="/pricing" style={{ color: "#a78bfa", fontWeight: 700 }}>Upgrade →</a>
-                    </span>
-                  ) : (
-                    <span>Output is saved to history.</span>
-                  )}
+                      <span>Output is saved to history.</span>
+                    )}
+                  </div>
+
+                  <div className="actionRow">
+                    {isGuest && guestUsed >= GUEST_TRY_LIMIT ? (
+                      <button className="btnPrimary" onClick={() => router.push("/register")}>
+                        Sign up to continue
+                      </button>
+                    ) : (
+                      <button
+                        className="btnPrimary"
+                        onClick={handleHumanise}
+                        disabled={loadingHumanise || (wordCount > wordLimit && plan.toUpperCase() !== "UNLIMITED")}
+                        title={wordCount > wordLimit ? `Reduce text to under ${wordLimit} words` : ""}
+                      >
+                        {/* FEATURE 1: countdown timer in the button label */}
+                        {loadingHumanise ? `Working… (~${remainingSeconds}s)` : "Humanise"}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                <div className="actionRow">
-                  {isGuest && guestUsed >= GUEST_TRY_LIMIT ? (
-                    <button className="btnPrimary" onClick={() => router.push("/register")}>
-                      Sign up to continue
-                    </button>
-                  ) : (
-                    <button
-                      className="btnPrimary"
-                      onClick={handleHumanise}
-                      disabled={loadingHumanise || (wordCount > wordLimit && plan.toUpperCase() !== "UNLIMITED")}
-                      title={wordCount > wordLimit ? `Reduce text to under ${wordLimit} words` : ""}
-                    >
-                      {/* FEATURE 1: countdown timer in the button label */}
-                      {loadingHumanise ? `Working… (~${remainingSeconds}s)` : "Humanise"}
-                    </button>
-                  )}
-                </div>
+                {/* Nudge guests toward logging in for a bigger daily allowance */}
+                {isGuest && (
+                  <div style={{ fontSize: 12, color: "var(--muted2)", textAlign: "right" }}>
+                    <a href="/login" style={{ color: "#a78bfa", fontWeight: 700 }}>Log in</a> to get 5 more free tries today
+                  </div>
+                )}
               </div>
 
               {error ? (
