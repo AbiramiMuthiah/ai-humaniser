@@ -839,7 +839,7 @@ app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
   }
 });
 
-const GUEST_TRY_LIMIT = 5;
+const GUEST_TRY_LIMIT = 2;
 const GUEST_WORD_LIMIT = 300;
 
 app.post("/guest/humanise", async (req, res) => {
