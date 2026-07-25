@@ -302,7 +302,7 @@ function DashboardContent() {
   const [isGuest, setIsGuest] = useState(false);
   const [guestId, setGuestId] = useState(null);
   const [guestUsed, setGuestUsed] = useState(0);
-  const GUEST_TRY_LIMIT = 5;
+  const GUEST_TRY_LIMIT = 2;
 
   const [historyOpen, setHistoryOpen] = useState(true);
 
