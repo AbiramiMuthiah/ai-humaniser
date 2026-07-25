@@ -1502,6 +1502,33 @@ function DashboardContent() {
                       </select>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      {/* Clear input button — only shows once there's something to clear */}
+                      {aiText && (
+                        <button
+                          onClick={() => {
+                            setAiText("");
+                            setUploadError("");
+                          }}
+                          title="Clear input"
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: 8,
+                            border: "1px solid rgba(255,120,120,0.22)",
+                            background: "rgba(255,120,120,0.08)",
+                            color: "rgba(255,180,180,0.9)",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 14,
+                            flex: "0 0 auto",
+                          }}
+                        >
+                          🗑
+                        </button>
+                      )}
+
                       {/* Word count badge */}
                       <span style={{
                         fontSize: 12,
