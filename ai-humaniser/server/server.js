@@ -177,6 +177,11 @@ function isProOrUnlimited(plan) {
   return p === "pro" || p === "unlimited";
 }
 
+function isBasicOrAbove(plan) {
+  const p = String(plan || "free").toLowerCase();
+  return p === "basic" || p === "pro" || p === "unlimited";
+}
+
 function stripAiFormatting(text) {
   return String(text || "")
     .replace(/^["'`]+|["'`]+$/g, "")
@@ -326,22 +331,6 @@ function postProcess(text, isAcademic) {
 
 /* ══════════════════════════════════════════════════════════
    FEATURE 5 — AI DETECTOR SCORE
-   Uses Sapling AI Detection API when SAPLING_API_KEY is set.
-   Falls back to a local heuristic scorer (perplexity/burstiness
-   proxy) when no key is configured, so the feature always works.
-══════════════════════════════════════════════════════════ */
-/* ══════════════════════════════════════════════════════════
-   FEATURE 5 — AI DETECTOR SCORE
-   Uses Sapling AI Detection API when SAPLING_API_KEY is set.
-   Falls back to a local multi-signal ensemble scorer when no key
-   is configured. This isn't a trained classifier — it's a weighted
-   combination of the stylometric proxies the literature associates
-   with AI text (low burstiness, low lexical diversity, buzzword/
-   transition-word density, passive voice), each normalized to a
-   0-100 "AI-likelihood" contribution and combined with fixed
-   weights, similar in spirit to the multi-signal ensembles
-   described in DIPPER/RAID-style detector research. It is provided
-   as a directional signal, not a calibrated probability.
 ══════════════════════════════════════════════════════════ */
 async function saplingDetect(text) {
   const key = process.env.SAPLING_API_KEY;
@@ -353,7 +342,6 @@ async function saplingDetect(text) {
   });
   if (!resp.ok) throw new Error(`Sapling API error: ${resp.status}`);
   const data = await resp.json();
-  // Sapling returns a "score" between 0 (human) and 1 (AI)
   const score = typeof data.score === "number" ? Math.round(data.score * 100) : null;
   return score;
 }
@@ -363,26 +351,12 @@ const PASSIVE_PATTERN = /\b(is|are|was|were|been|being)\s+\w+ed\b/gi;
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
-// ── Reliability thresholds ──
-// Detection on very short text is unreliable (not enough sentences to
-// measure burstiness/vocabulary variation), so scores below this length
-// are reported as "not enough text" rather than a confident percentage.
 const MIN_RELIABLE_WORDS = 50;
 
-// ── Fact-preservation guard ──
-// Numbers, dates, percentages, and citation-like fragments are the
-// cheapest, most objective thing to check before/after a rewrite. This
-// doesn't replace real semantic-similarity checking, but it catches the
-// most common and most damaging failure mode: a rewrite silently
-// changing a statistic or citation year while "sounding" more natural.
 function extractNumbers(text) {
   return Array.from(new Set((text.match(/\d[\d,]*\.?\d*%?/g) || []).map(s => s.trim())));
 }
 
-// Rough word-overlap ratio between two passages, used as a cheap
-// semantic-drift guard: if a "second pass" rewrite barely shares any
-// vocabulary with the first pass, it's more likely to have drifted in
-// meaning than to have genuinely improved naturalness.
 function wordOverlapRatio(a, b) {
   const wordsOf = (s) => new Set((s.toLowerCase().match(/[a-z']+/g) || []));
   const wa = wordsOf(a);
@@ -393,9 +367,6 @@ function wordOverlapRatio(a, b) {
   return intersect / Math.max(wa.size, wb.size);
 }
 
-// Core stylometric feature extraction — the same category of features
-// (sentence length distribution, vocabulary diversity, punctuation and
-// transition-word frequency) used by classical stylometric detectors.
 function extractStyloFeatures(text) {
   const words = (text.match(/[A-Za-z']+/g) || []);
   const wordCount = Math.max(1, words.length);
@@ -408,8 +379,6 @@ function extractStyloFeatures(text) {
   const meanLen = lens.reduce((a, b) => a + b, 0) / sentCount;
   const variance = lens.reduce((a, b) => a + (b - meanLen) ** 2, 0) / sentCount;
   const stdLen = Math.sqrt(variance);
-  // Coefficient of variation: burstiness proxy. Human writing tends to
-  // mix short/long sentences (higher CV); uniform AI output has low CV.
   const burstinessCV = meanLen > 0 ? stdLen / meanLen : 0;
 
   const buzzHits = (text.match(BUZZWORD_PATTERN) || []).length;
@@ -427,9 +396,8 @@ function extractStyloFeatures(text) {
 function heuristicDetect(text) {
   const f = extractStyloFeatures(text);
 
-  // Each sub-score is an independent 0-100 "AI-likelihood" contribution.
-  const burstinessScore = clamp(100 - f.burstinessCV * 140, 0, 100);          // low CV -> AI-like
-  const vocabScore = clamp(100 - f.typeTokenRatio * 140, 0, 100);             // low diversity -> AI-like
+  const burstinessScore = clamp(100 - f.burstinessCV * 140, 0, 100);
+  const vocabScore = clamp(100 - f.typeTokenRatio * 140, 0, 100);
   const buzzScore = clamp(f.buzzPer100Words * 18, 0, 100);
   const passiveScore = clamp(f.passivePer100Words * 12, 0, 100);
   const contractionRelief = clamp(f.contractionPer100Words * 5, 0, 35);
@@ -450,8 +418,6 @@ function heuristicDetect(text) {
     passiveVoice: { value: Number(f.passivePer100Words.toFixed(1)), aiSignal: Math.round(passiveScore), note: f.passivePer100Words > 1.5 ? "Notable passive-voice usage" : "Mostly active voice" },
   };
 
-  // Confidence reflects how far the score sits from the 50/50 midpoint —
-  // scores near the middle mean the signals disagreed with each other.
   const distanceFromMid = Math.abs(score - 50);
   const confidence = distanceFromMid >= 30 ? "High" : distanceFromMid >= 15 ? "Moderate" : "Low";
 
@@ -462,16 +428,12 @@ app.post("/detect-score", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
-    if (!isProOrUnlimited(user.plan)) {
-      return res.status(403).json({ message: "AI detector score is available on Pro and Unlimited plans only.", upgradeRequired: true });
+    if (!isBasicOrAbove(user.plan)) {
+      return res.status(403).json({ message: "AI detector score is available on Basic, Pro, and Unlimited plans only.", upgradeRequired: true });
     }
     const { text } = req.body;
     if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short to score." });
 
-    // Detection on short passages is unreliable — there aren't enough
-    // sentences to measure sentence-length variation or vocabulary
-    // diversity meaningfully. Say so instead of returning a falsely
-    // confident number.
     const wordCount = (text.match(/\S+/g) || []).length;
     if (wordCount < MIN_RELIABLE_WORDS) {
       return res.json({
@@ -499,8 +461,6 @@ app.post("/detect-score", authMiddleware, async (req, res) => {
       confidence = result.confidence;
     }
 
-    // Hedged, probabilistic wording rather than an accusatory label —
-    // a detector score is evidence, not proof of who wrote something.
     let label = "More consistent with human-written text";
     if (score >= 70) label = "More consistent with AI-generated text";
     else if (score >= 30) label = "Mixed / uncertain signals";
@@ -512,11 +472,6 @@ app.post("/detect-score", authMiddleware, async (req, res) => {
   }
 });
 
-/* ── Per-sentence scoring, used to highlight which parts of the
-   output still read as AI-generated so they can be targeted with
-   the sentence rewriter. Sapling's per-sentence scores are used
-   when available; otherwise a local heuristic scores each sentence
-   against its paragraph so scoring stays instant and free. ── */
 function heuristicSentenceScore(sentence, allSentences) {
   const words = sentence.trim().split(/\s+/).filter(Boolean);
   const wordCount = words.length;
@@ -525,8 +480,6 @@ function heuristicSentenceScore(sentence, allSentences) {
   const lens = allSentences.map(s => s.split(/\s+/).filter(Boolean).length);
   const mean = lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length);
   const deviation = Math.abs(wordCount - mean);
-  // Sentences that sit close to the paragraph's average length look
-  // uniform — a hallmark of unedited AI output (low burstiness).
   const uniformityScore = Math.max(0, 40 - deviation * 4);
 
   const buzzwords = /\b(furthermore|moreover|additionally|consequently|nevertheless|subsequently|utilize|facilitate|demonstrate|individuals|optimal|paradigm|robust|leverage|delve|nuanced|seamless|cutting-edge|tapestry|testament|pivotal|profound|undeniably)\b/gi;
@@ -550,8 +503,8 @@ app.post("/detect-score-sentences", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
-    if (!isProOrUnlimited(user.plan)) {
-      return res.status(403).json({ message: "Sentence-level AI highlighting is available on Pro and Unlimited plans only.", upgradeRequired: true });
+    if (!isBasicOrAbove(user.plan)) {
+      return res.status(403).json({ message: "Sentence-level AI highlighting is available on Basic, Pro, and Unlimited plans only.", upgradeRequired: true });
     }
     const { text } = req.body;
     if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short to score." });
@@ -559,16 +512,11 @@ app.post("/detect-score-sentences", authMiddleware, async (req, res) => {
     const sentences = splitSentences(text);
     if (sentences.length === 0) return res.json({ sentences: [], reliable: true });
 
-    // With too few words, sentence-length variation and paragraph averages
-    // aren't meaningful — return the sentences unscored rather than
-    // highlighting them based on noise.
     const totalWords = (text.match(/\S+/g) || []).length;
     if (totalWords < MIN_RELIABLE_WORDS) {
       return res.json({ sentences: sentences.map(s => ({ sentence: s, score: null })), reliable: false, minWords: MIN_RELIABLE_WORDS });
     }
 
-    // Try Sapling's per-sentence scoring first (score_sentences flag),
-    // fall back to the local heuristic per sentence if unavailable.
     let scored = null;
     const key = process.env.SAPLING_API_KEY;
     if (key) {
@@ -600,9 +548,7 @@ app.post("/detect-score-sentences", authMiddleware, async (req, res) => {
 });
 
 /* ══════════════════════════════════════════════════════════
-   FEATURE 6 — SENTENCE-LEVEL REWRITER
-   Rewrites a single sentence in place, using surrounding
-   context so the tone stays consistent with the paragraph.
+   FEATURE 6 — SENTENCE-LEVEL REWRITER (Pro/Unlimited only)
 ══════════════════════════════════════════════════════════ */
 app.post("/rewrite-sentence", authMiddleware, async (req, res) => {
   try {
@@ -654,9 +600,6 @@ app.get("/me", authMiddleware, async (req, res) => {
 });
 
 /* ── HUMANISE ── */
-// ── Shared humanise pipeline ──
-// Used by both the authenticated /humanise route and the public
-// /guest/humanise trial route, so the two never drift out of sync.
 async function humaniseText(text, mode = "standard") {
     const isAcademic = mode === "academic" || mode === "professional";
 
@@ -781,29 +724,12 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
 
     const rawText = await generateWithRetries(systemInstruction, userPrompt, 1.25);
 
-    // Numbers/dates/percentages in the ORIGINAL input — the objective
-    // ground truth we check every pass against. Rewriting should never
-    // silently change a statistic or citation year.
     const originalNumbers = extractNumbers(text);
 
-    // Apply post-processing to attack detector pillars
     const raw = stripAiFormatting(rawText);
     let humanised = postProcess(raw, isAcademic);
     let passesUsed = 1;
 
-    // ── Second pass: if the draft still scores as detectable, send it back
-    // with a targeted list of exactly what's still wrong (mirrors the
-    // "structural scrambling / purge AI-speak" workflow from detector
-    // research) instead of just accepting a single-shot rewrite.
-    //
-    // Guard rail: this pass is optimizing against OUR OWN heuristic
-    // scorer, which is exactly the "detector-rewriter overfitting" trap —
-    // a rewrite can chase a lower score by drifting away from the
-    // original meaning or quietly dropping numbers/citations. So a
-    // revision is only accepted if it (a) scored better, (b) still
-    // shares enough vocabulary with the first-pass draft, (c) didn't
-    // balloon or shrink drastically in length, and (d) didn't lose any
-    // number that survived the first pass.
     try {
       const preCheck = heuristicDetect(humanised);
       if (preCheck.score >= 30) {
@@ -860,17 +786,12 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
       console.warn("Second humanise pass failed, keeping first-pass result:", e.message);
     }
 
-    // Final fact-check: did any number from the original input go missing
-    // in whichever version we're about to return? Surfaced to the UI as a
-    // caution note rather than silently trusting the rewrite.
     const missingNumbers = originalNumbers.filter(n => !humanised.includes(n));
     const factCheck = { numbersPreserved: missingNumbers.length === 0, missingNumbers };
 
   return { humanised, passesUsed, factCheck };
 }
 
-// Shared error classification for generation failures — used by both
-// the authenticated and guest humanise routes.
 function sendGenerationError(err, res) {
   console.error("Humanise error after retries:", err);
 
@@ -918,15 +839,6 @@ app.post("/humanise", authMiddleware, usageLimit, async (req, res) => {
   }
 });
 
-/* ── GUEST TRIAL — no account required, limited tries ──
-   Lets people try the tool before signing up. Usage is tracked
-   server-side per guestId (a UUID the frontend generates and stores in
-   localStorage) rather than trusted purely client-side, so clearing
-   localStorage alone doesn't reset the trial as long as the guestId
-   cookie/value persists — a determined user could still work around
-   this by clearing everything and getting a new ID, which is an
-   accepted tradeoff for a frictionless trial rather than requiring
-   IP tracking or device fingerprinting. ── */
 const GUEST_TRY_LIMIT = 5;
 const GUEST_WORD_LIMIT = 300;
 
