@@ -104,7 +104,7 @@ function CopyButton({ text }) {
 // Runs automatically whenever a fresh humanised result comes in (Pro/Unlimited only).
 // High-AI sentences get a red highlight, borderline ones amber, clean ones no highlight.
 // Clicking any sentence rewrites it in place and re-scores.
-function AiHighlightPanel({ humanText, setHumanText, canUse, mode, router, autoToken }) {
+function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, router, autoToken }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [overallScore, setOverallScore] = useState(null);
@@ -148,6 +148,10 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, mode, router, autoT
   }, [autoToken]);
 
   async function rewriteAt(idx) {
+    if (!canRewrite) {
+      setErr("Click-to-rewrite is a Pro/Unlimited feature. AI detection scoring is included in your Basic plan.");
+      return;
+    }
     setErr("");
     const items = sentenceScores.length ? sentenceScores.map(x => x.sentence) : splitIntoSentences(humanText);
     const target = items[idx];
@@ -179,7 +183,7 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, mode, router, autoT
     return (
       <div className="analysisCard">
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
-          Pro and Unlimited plans auto-score this output and highlight the sentences that still read as AI, so you can rewrite just those.
+          Basic, Pro, and Unlimited plans auto-score this output and highlight the sentences that still read as AI.
         </span>
         <button className="btnSmall" onClick={() => router.push("/pricing")}>🔒 Upgrade</button>
       </div>
@@ -356,8 +360,14 @@ function DashboardContent() {
     return p === "PRO" || p === "UNLIMITED";
   }, [plan]);
 
-  // FEATURE 5 & 6 gating — pro/unlimited only
-  const canUseProFeatures = useMemo(() => {
+  // FEATURE 5: AI detection score + highlighting — available from Basic plan up
+  const canUseDetection = useMemo(() => {
+    const p = plan.toUpperCase();
+    return p === "BASIC" || p === "PRO" || p === "UNLIMITED";
+  }, [plan]);
+
+  // FEATURE 6: click-to-rewrite — stays Pro/Unlimited only (heavier Gemini cost per click)
+  const canUseRewrite = useMemo(() => {
     const p = plan.toUpperCase();
     return p === "PRO" || p === "UNLIMITED";
   }, [plan]);
@@ -1734,7 +1744,8 @@ function DashboardContent() {
               <AiHighlightPanel
                 humanText={humanText}
                 setHumanText={setHumanText}
-                canUse={canUseProFeatures}
+                canUse={canUseDetection}
+                canRewrite={canUseRewrite}
                 mode={mode}
                 router={router}
                 autoToken={autoScoreToken}
