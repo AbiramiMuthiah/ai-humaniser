@@ -19,7 +19,27 @@ function makeTitle(input) {
   return t.length > 42 ? t.slice(0, 42) + "…" : t;
 }
 
-// ✅ FIX 2: Inline copy button that shows "Copied!" in place
+// Rough estimate of how long a humanise call will take, based on word count.
+// Tuned around a ~6s floor plus ~0.09s per word, capped so the UI stays sane.
+function estimateDuration(wordCount) {
+  const est = 6 + wordCount * 0.09;
+  return Math.max(6, Math.min(45, Math.round(est)));
+}
+
+// FEATURE 3: progress steps shown while a humanise request is in flight.
+// Each step activates once elapsed time crosses its threshold (as a % of the estimate).
+const PROGRESS_STEPS = [
+  { label: "Rewriting structure…", at: 0 },
+  { label: "Refining sentences…", at: 0.35 },
+  { label: "Polishing output…", at: 0.7 },
+];
+
+function splitIntoSentences(text) {
+  const matches = String(text || "").match(/[^.!?]+[.!?]+|\S+$/g) || [];
+  return matches.map((s) => s.trim()).filter(Boolean);
+}
+
+// ✅ FIX 2: Inline copy button that shows "Copied!" in place, with fallback support for non-HTTPS/insecure contexts
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -33,13 +53,221 @@ function CopyButton({ text }) {
         transition: "all 0.2s", minWidth: 58,
       }}
       onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text)
+            .then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            })
+            .catch((err) => {
+              console.error("Failed to copy text using navigator.clipboard: ", err);
+            });
+        } else {
+          // Fallback to older document.execCommand for insecure (HTTP) contexts
+          try {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            // Place outside the visible area and keep it fixed
+            textArea.style.position = "fixed";
+            textArea.style.top = "0";
+            textArea.style.left = "0";
+            textArea.style.width = "2em";
+            textArea.style.height = "2em";
+            textArea.style.padding = "0";
+            textArea.style.border = "none";
+            textArea.style.outline = "none";
+            textArea.style.boxShadow = "none";
+            textArea.style.background = "transparent";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            const successful = document.execCommand("copy");
+            document.body.removeChild(textArea);
+            if (successful) {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            } else {
+              console.error("Fallback copying was unsuccessful");
+            }
+          } catch (err) {
+            console.error("Failed to copy text using fallback method: ", err);
+          }
+        }
       }}
     >
       {copied ? "✓ Copied!" : "Copy"}
     </button>
+  );
+}
+
+// FEATURE 5 + 6 combined: auto AI-score + highlighted click-to-rewrite.
+// Runs automatically whenever a fresh humanised result comes in (Pro/Unlimited only).
+// High-AI sentences get a red highlight, borderline ones amber, clean ones no highlight.
+// Clicking any sentence rewrites it in place and re-scores.
+function AiHighlightPanel({ humanText, setHumanText, canUse, mode, router, autoToken }) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [overallScore, setOverallScore] = useState(null);
+  const [overallLabel, setOverallLabel] = useState("");
+  const [reliable, setReliable] = useState(true);
+  const [sentenceScores, setSentenceScores] = useState([]); // [{sentence, score}]
+  const [rewritingIdx, setRewritingIdx] = useState(null);
+  const requestIdRef = useRef(0); // guards against a stale/slow response overwriting a newer one
+
+  async function runDetection(text) {
+    if (!canUse || !text || text.trim().length < 5) return;
+    const myRequestId = ++requestIdRef.current;
+    setErr("");
+    setLoading(true);
+    try {
+      const [overallRes, sentRes] = await Promise.all([
+        api.post("/detect-score", { text }),
+        api.post("/detect-score-sentences", { text }),
+      ]);
+      // If a newer request has started since this one fired, drop this result.
+      if (myRequestId !== requestIdRef.current) return;
+      setOverallScore(overallRes.data?.score ?? null);
+      setOverallLabel(overallRes.data?.label || "");
+      setReliable(overallRes.data?.reliable !== false);
+      setSentenceScores(sentRes.data?.sentences || []);
+    } catch (e) {
+      if (myRequestId !== requestIdRef.current) return;
+      const status = e?.response?.status;
+      setErr(status === 403 ? "AI scoring is a Pro/Unlimited feature." : (e?.response?.data?.message || "Could not score this text."));
+    } finally {
+      if (myRequestId === requestIdRef.current) setLoading(false);
+    }
+  }
+
+  // Auto-run the moment a fresh humanised result arrives.
+  useEffect(() => {
+    if (canUse && humanText && autoToken) {
+      runDetection(humanText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoToken]);
+
+  async function rewriteAt(idx) {
+    setErr("");
+    const items = sentenceScores.length ? sentenceScores.map(x => x.sentence) : splitIntoSentences(humanText);
+    const target = items[idx];
+    if (!target) return;
+    setRewritingIdx(idx);
+    try {
+      const context = items.slice(Math.max(0, idx - 1), idx + 2).join(" ");
+      const res = await api.post("/rewrite-sentence", { sentence: target, context, mode });
+      const rewritten = res.data?.rewritten;
+      if (rewritten) {
+        const next = items.slice();
+        next[idx] = rewritten;
+        const joined = next.join(" ");
+        setHumanText(joined);
+        // Re-score the updated text so the highlight clears/updates for this sentence.
+        runDetection(joined);
+      }
+    } catch (e) {
+      const status = e?.response?.status;
+      setErr(status === 403 ? "Sentence rewriting is a Pro/Unlimited feature." : (e?.response?.data?.message || "Rewrite failed."));
+    } finally {
+      setRewritingIdx(null);
+    }
+  }
+
+  if (!humanText) return null;
+
+  if (!canUse) {
+    return (
+      <div className="analysisCard">
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>
+          Pro and Unlimited plans auto-score this output and highlight the sentences that still read as AI, so you can rewrite just those.
+        </span>
+        <button className="btnSmall" onClick={() => router.push("/pricing")}>🔒 Upgrade</button>
+      </div>
+    );
+  }
+
+  const overallColor =
+    overallScore === null ? "rgba(255,255,255,0.6)" :
+    overallScore >= 70 ? "#ff8a80" :
+    overallScore >= 35 ? "#ffd166" : "#7defa0";
+
+  // Use scored sentences if available, otherwise plain split (before first score comes back).
+  const displaySentences = sentenceScores.length
+    ? sentenceScores
+    : splitIntoSentences(humanText).map((s) => ({ sentence: s, score: null }));
+
+  return (
+    <div className="analysisPanel">
+      {/* Score header — left-to-right layout: label, big number, passage below spans full width */}
+      <div className="analysisHeader">
+        <div className="analysisHeaderLeft">
+          <span className="analysisTitle">AI Detection</span>
+          {loading ? (
+            <span className="analysisMuted">Scanning…</span>
+          ) : overallScore !== null && reliable ? (
+            <>
+              <span className="analysisBigScore" style={{ color: overallColor }}>{overallScore}%</span>
+              <span className="analysisMuted">AI likelihood — {overallLabel}</span>
+              <span className="analysisDisclaimer">Directional estimate, not proof of authorship</span>
+            </>
+          ) : !reliable ? (
+            <span className="analysisMuted">Not enough text for a reliable estimate — add more content and recheck</span>
+          ) : null}
+        </div>
+        <button className="btnSmall" onClick={() => runDetection(humanText)} disabled={loading} style={{ opacity: loading ? 0.6 : 1 }}>
+          {loading ? "Scanning…" : "Recheck"}
+        </button>
+      </div>
+
+      {/* Highlighted passage — full width */}
+      <div className="highlightBox">
+        {displaySentences.map((item, idx) => {
+          const s = item.sentence;
+          const score = item.score;
+          const isHigh = score !== null && score >= 60;
+          const isMid = score !== null && score >= 35 && score < 60;
+          const bg = isHigh
+            ? "rgba(255,90,90,0.22)"
+            : isMid
+              ? "rgba(255,209,102,0.16)"
+              : "transparent";
+          const underline = isHigh
+            ? "1px solid rgba(255,120,120,0.55)"
+            : isMid
+              ? "1px dashed rgba(255,209,102,0.5)"
+              : "1px dashed rgba(139,120,255,0.25)";
+          return (
+            <span
+              key={idx}
+              onClick={() => rewritingIdx === null && rewriteAt(idx)}
+              title={score !== null ? `${score}% AI-likely — click to rewrite` : "Click to rewrite this sentence"}
+              style={{
+                cursor: rewritingIdx === null ? "pointer" : "default",
+                padding: "1px 3px",
+                borderRadius: 5,
+                marginRight: 4,
+                background: rewritingIdx === idx ? "rgba(139,120,255,0.3)" : bg,
+                opacity: rewritingIdx !== null && rewritingIdx !== idx ? 0.5 : 1,
+                borderBottom: underline,
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { if (rewritingIdx === null && !isHigh && !isMid) e.currentTarget.style.background = "rgba(139,120,255,0.14)"; }}
+              onMouseLeave={(e) => { if (rewritingIdx !== idx) e.currentTarget.style.background = bg; }}
+            >
+              {rewritingIdx === idx ? "Rewriting…" : s}{" "}
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="legendRow">
+        <span><span className="legendDot" style={{ background: "rgba(255,90,90,0.5)" }} />High AI — click to rewrite</span>
+        <span><span className="legendDot" style={{ background: "rgba(255,209,102,0.4)" }} />Mixed</span>
+        <span><span className="legendDot" style={{ background: "rgba(255,255,255,0.1)" }} />Human-like</span>
+      </div>
+
+      {err && <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,150,150,0.9)" }}>{err}</div>}
+    </div>
   );
 }
 
@@ -64,6 +292,13 @@ export default function DashboardPage() {
   const toastTimerRef = useRef(null);
 
   const [error, setError] = useState("");
+  const [factCheck, setFactCheck] = useState(null); // { numbersPreserved, missingNumbers }
+
+  // Guest trial — lets people use the tool before creating an account.
+  const [isGuest, setIsGuest] = useState(false);
+  const [guestId, setGuestId] = useState(null);
+  const [guestUsed, setGuestUsed] = useState(0);
+  const GUEST_TRY_LIMIT = 5;
 
   const [historyOpen, setHistoryOpen] = useState(true);
 
@@ -75,6 +310,17 @@ export default function DashboardPage() {
   const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef(null);
   const [mode, setMode] = useState("standard");
+  const aiTextareaRef = useRef(null);
+  const humanTextareaRef = useRef(null);
+
+  // FEATURE 1 + 3: timer + progress steps while humanising
+  const [elapsed, setElapsed] = useState(0);
+  const [estimatedTotal, setEstimatedTotal] = useState(10);
+  const elapsedTimerRef = useRef(null);
+
+  // FEATURE 5 + 6: bumped each time a fresh humanise result lands, to
+  // trigger the AI-score/highlight panel to auto-run once per result.
+  const [autoScoreToken, setAutoScoreToken] = useState(0);
 
   const remaining = useMemo(
     () => Math.max(0, (limitToday || 0) - (usedToday || 0)),
@@ -110,7 +356,27 @@ export default function DashboardPage() {
     return p === "PRO" || p === "UNLIMITED";
   }, [plan]);
 
+  // FEATURE 5 & 6 gating — pro/unlimited only
+  const canUseProFeatures = useMemo(() => {
+    const p = plan.toUpperCase();
+    return p === "PRO" || p === "UNLIMITED";
+  }, [plan]);
+
   const editorRef = useRef(null);
+
+  // Auto-grow both textareas to fit their content instead of sitting at a
+  // fixed height with empty space below short text. Capped so a huge paste
+  // still scrolls rather than blowing up the page.
+  function autoGrow(ref) {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const max = 460; // px
+    el.style.height = Math.min(el.scrollHeight, max) + "px";
+  }
+
+  useEffect(() => { autoGrow(aiTextareaRef); }, [aiText]);
+  useEffect(() => { autoGrow(humanTextareaRef); }, [humanText]);
 
   function showToast(msg) {
     setToast(msg);
@@ -122,6 +388,7 @@ export default function DashboardPage() {
     setMounted(true);
     return () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     };
   }, []);
 
@@ -131,9 +398,21 @@ export default function DashboardPage() {
 
     const token = localStorage.getItem("token");
     if (!token) {
-      router.replace("/login");
+      // No forced redirect — let people try the tool first. Generate (or
+      // reuse) a guestId so the backend can track the 5-try trial.
+      let gid = localStorage.getItem("guestId");
+      if (!gid) {
+        gid = (typeof crypto !== "undefined" && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : `guest_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem("guestId", gid);
+      }
+      setGuestId(gid);
+      setIsGuest(true);
+      setGuestUsed(Number(localStorage.getItem("guestUsed") || 0));
       return;
     }
+    setIsGuest(false);
 
     // ✅ Handle Stripe payment success redirect
     const payment = searchParams?.get("payment");
@@ -240,6 +519,25 @@ export default function DashboardPage() {
     }
   }
 
+  // FEATURE 1 + 3: start/stop the elapsed-time ticker around the humanise call
+  function startTimer(wc) {
+    const est = estimateDuration(wc);
+    setEstimatedTotal(est);
+    setElapsed(0);
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    elapsedTimerRef.current = setInterval(() => {
+      setElapsed((prev) => prev + 1);
+    }, 1000);
+  }
+
+  function stopTimer() {
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
+    setElapsed(0);
+  }
+
   async function handleHumanise() {
     setError("");
 
@@ -249,14 +547,23 @@ export default function DashboardPage() {
       return;
     }
 
-    if (usedToday >= limitToday) {
+    if (isGuest) {
+      if (guestUsed >= GUEST_TRY_LIMIT) {
+        setError("You've used all 5 free tries. Create a free account to keep going.");
+        return;
+      }
+    } else if (usedToday >= limitToday) {
       setError(`Daily limit reached (${limitToday}/day). Upgrade to continue.`);
       return;
     }
 
     setLoadingHumanise(true);
+    startTimer(wordCount);
+    setFactCheck(null);
     try {
-      const res = await api.post("/humanise", { text: t, mode });
+      const res = isGuest
+        ? await api.post("/guest/humanise", { text: t, mode }, { headers: { "x-guest-id": guestId } })
+        : await api.post("/humanise", { text: t, mode });
 
       const out =
         res.data?.humanised ||
@@ -266,26 +573,43 @@ export default function DashboardPage() {
         "";
 
       setHumanText(out);
+      setFactCheck(res.data?.factCheck || null);
+      // FEATURE 5 + 6: trigger the AI-score/highlight panel to auto-run on this fresh result.
+      // (No-op in practice for guests — the detector/highlight panel is a Pro/Unlimited feature.)
+      setAutoScoreToken((t) => t + 1);
 
-      // ✅ FIX 1: backend sends usage.used / usage.limit (not usedToday/limitToday)
-      if (res.data?.usage) {
-        const u = res.data.usage;
-        if (typeof u.used === "number") setUsedToday(u.used);
-        if (typeof u.limit === "number") setLimitToday(u.limit);
-        if (u.plan) setPlan(String(u.plan).toUpperCase());
+      if (isGuest) {
+        const used = res.data?.usage?.used ?? guestUsed + 1;
+        setGuestUsed(used);
+        localStorage.setItem("guestUsed", String(used));
+        const left = Math.max(0, GUEST_TRY_LIMIT - used);
+        showToast(left > 0 ? `✓ Humanised! ${left} free ${left === 1 ? "try" : "tries"} left.` : "✓ That was your last free try.");
+      } else {
+        // ✅ FIX 1: backend sends usage.used / usage.limit (not usedToday/limitToday)
+        if (res.data?.usage) {
+          const u = res.data.usage;
+          if (typeof u.used === "number") setUsedToday(u.used);
+          if (typeof u.limit === "number") setLimitToday(u.limit);
+          if (u.plan) setPlan(String(u.plan).toUpperCase());
+        }
+        // Always sync with server to keep nav badge accurate
+        await loadMe();
+        showToast("✓ Humanised! Output copied ready.");
+        await loadHistory();
       }
-      // Always sync with server to keep nav badge accurate
-      await loadMe();
-
-      showToast("✓ Humanised! Output copied ready.");
-      await loadHistory();
     } catch (e) {
       const status = e?.response?.status;
       const backendMsg = e?.response?.data?.message;
+      if (isGuest && status === 403) {
+        // Trial exhausted server-side — sync the local counter so the UI matches.
+        setGuestUsed(GUEST_TRY_LIMIT);
+        localStorage.setItem("guestUsed", String(GUEST_TRY_LIMIT));
+      }
       setError(backendMsg || "Humanise failed.");
-      if (status === 429) await loadMe();
+      if (!isGuest && status === 429) await loadMe();
     } finally {
       setLoadingHumanise(false);
+      stopTimer();
     }
   }
 
@@ -372,6 +696,14 @@ export default function DashboardPage() {
     setMenuOpenId(null);
     router.push(`/texts/${id}`);
   }
+
+  // FEATURE 3: derive the active progress step + percent from elapsed/estimatedTotal
+  const progressFraction = Math.min(0.99, elapsed / Math.max(1, estimatedTotal));
+  const activeStepIdx = PROGRESS_STEPS.reduce(
+    (acc, step, idx) => (progressFraction >= step.at ? idx : acc),
+    0
+  );
+  const remainingSeconds = Math.max(0, estimatedTotal - elapsed);
 
   return (
     <>
@@ -630,7 +962,7 @@ export default function DashboardPage() {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 14px;
-          flex: 1;
+          align-items: start;
         }
 
         .label {
@@ -641,8 +973,10 @@ export default function DashboardPage() {
 
         .textarea {
           width: 100%;
-          height: calc(100vh - 280px);
-          min-height: 320px;
+          height: 220px;
+          min-height: 220px;
+          max-height: 460px;
+          overflow-y: auto;
           resize: none;
           border-radius: 14px;
           padding: 14px;
@@ -708,6 +1042,127 @@ export default function DashboardPage() {
           color: rgba(255, 255, 255, 0.92);
           box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
           font-size: 13px;
+        }
+
+        /* FEATURE 3: progress steps */
+        .progressWrap {
+          margin-top: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .progressStepRow {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+        .progressStepLabel {
+          font-size: 12px;
+          color: var(--muted);
+          min-width: 150px;
+        }
+        .progressStepLabel.active {
+          color: rgba(255, 255, 255, 0.92);
+          font-weight: 700;
+        }
+        .progressBarTrack {
+          flex: 1;
+          height: 6px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.08);
+          overflow: hidden;
+        }
+        .progressBarFill {
+          height: 100%;
+          border-radius: 999px;
+          background: linear-gradient(90deg, rgba(139, 120, 255, 0.9), rgba(109, 93, 255, 0.9));
+          transition: width 0.4s ease;
+        }
+        .progressPercent {
+          font-size: 12px;
+          color: var(--muted);
+          min-width: 34px;
+          text-align: right;
+        }
+
+        /* FEATURE 5 + 6: AI Detection analysis panel — academic "report" styling */
+        .analysisCard {
+          margin-top: 14px;
+          padding: 10px 12px;
+          border-radius: 12px;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .analysisPanel {
+          margin-top: 14px;
+          border-radius: 14px;
+          border: 1px solid rgba(255, 255, 255, 0.09);
+          background: rgba(255, 255, 255, 0.025);
+          padding: 14px;
+        }
+        .analysisHeader {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          flex-wrap: wrap;
+          margin-bottom: 8px;
+        }
+        .analysisHeaderLeft {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .analysisTitle {
+          font-size: 12px;
+          letter-spacing: 0.4px;
+          text-transform: uppercase;
+          color: var(--muted2);
+          font-weight: 700;
+        }
+        .analysisBigScore {
+          font-size: 22px;
+          font-weight: 900;
+          line-height: 1;
+        }
+        .analysisMuted {
+          font-size: 12px;
+          color: var(--muted);
+        }
+        .analysisDisclaimer {
+          font-size: 10.5px;
+          color: var(--muted2);
+          font-style: italic;
+        }
+        .highlightBox {
+          padding: 12px;
+          border-radius: 10px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: rgba(0, 0, 0, 0.16);
+          line-height: 1.85;
+          font-size: 14px;
+        }
+        .legendRow {
+          margin-top: 8px;
+          display: flex;
+          gap: 14px;
+          font-size: 11px;
+          color: var(--muted);
+          flex-wrap: wrap;
+        }
+        .legendDot {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          border-radius: 2px;
+          margin-right: 4px;
         }
 
         /* responsive */
@@ -794,49 +1249,85 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* RIGHT: plan + buttons */}
+          {/* RIGHT: plan + buttons (guest-aware) */}
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
               style={{
                 padding: "8px 12px",
                 borderRadius: 999,
-                background: "rgba(139,120,255,0.12)",
-                border: "1px solid rgba(139,120,255,0.25)",
+                background: isGuest ? "rgba(255,209,102,0.12)" : "rgba(139,120,255,0.12)",
+                border: `1px solid ${isGuest ? "rgba(255,209,102,0.28)" : "rgba(139,120,255,0.25)"}`,
                 color: "rgba(255,255,255,0.9)",
                 fontSize: 13,
                 whiteSpace: "nowrap",
               }}
             >
-              Plan: <b>{plan}</b> • Used today: <b>{usedToday}</b> / {limitToday}
+              {isGuest
+                ? <>Free trial: <b>{guestUsed}</b> / {GUEST_TRY_LIMIT} tries used</>
+                : <>Plan: <b>{plan}</b> • Used today: <b>{usedToday}</b> / {limitToday}</>}
             </div>
 
-            <button
-              onClick={goPricing}
-              style={{
-                padding: "9px 14px",
-                borderRadius: 12,
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                color: "var(--text)",
-                cursor: "pointer",
-              }}
-            >
-              Upgrade
-            </button>
+            {isGuest ? (
+              <>
+                <button
+                  onClick={() => router.push("/login")}
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 12,
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Log in
+                </button>
+                <button
+                  onClick={() => router.push("/register")}
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(139,120,255,0.25)",
+                    background: "linear-gradient(135deg, rgba(139,120,255,0.9), rgba(109,93,255,0.9))",
+                    color: "rgba(255,255,255,0.95)",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Sign up free
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={goPricing}
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 12,
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Upgrade
+                </button>
 
-            <button
-              onClick={logout}
-              style={{
-                padding: "9px 14px",
-                borderRadius: 12,
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.10)",
-                color: "var(--text)",
-                cursor: "pointer",
-              }}
-            >
-              Logout
-            </button>
+                <button
+                  onClick={logout}
+                  style={{
+                    padding: "9px 14px",
+                    borderRadius: 12,
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Logout
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -869,36 +1360,56 @@ export default function DashboardPage() {
                 </button>
               ) : null}
 
-              {historyOpen ? (
-                <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 10 }}>
-                  {loadingHistory ? "Loading..." : `${history.length} item${history.length === 1 ? "" : "s"}`}
-                </div>
-              ) : null}
+              {isGuest ? (
+                historyOpen && (
+                  <div
+                    style={{
+                      padding: 12,
+                      borderRadius: 14,
+                      border: "1px dashed rgba(255,209,102,0.25)",
+                      color: "var(--muted)",
+                      background: "rgba(255,209,102,0.05)",
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Your history isn't saved as a guest.{" "}
+                    <a href="/register" style={{ color: "#ffd166", fontWeight: 700 }}>Create a free account</a> to keep every humanised result.
+                  </div>
+                )
+              ) : (
+                <>
+                  {historyOpen ? (
+                    <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 10 }}>
+                      {loadingHistory ? "Loading..." : `${history.length} item${history.length === 1 ? "" : "s"}`}
+                    </div>
+                  ) : null}
 
-              {!loadingHistory && history.length === 0 && historyOpen && (
-                <div
-                  style={{
-                    padding: 12,
-                    borderRadius: 14,
-                    border: "1px dashed rgba(255,255,255,0.14)",
-                    color: "var(--muted)",
-                    background: "rgba(0,0,0,0.18)",
-                    fontSize: 13,
-                  }}
-                >
-                  No history yet.
-                </div>
-              )}
-
-              <div style={{ display: "grid", gap: 10 }}>
-                {history.map((item) => {
-                  const id = item._id || item.id;
-                  const createdAt = item.createdAt || item.timestamp || item.date;
-                  const input = item.input || item.aiText || item.text || "";
-                  const title = makeTitle(input);
-
-                  return (
+                  {!loadingHistory && history.length === 0 && historyOpen && (
                     <div
+                      style={{
+                        padding: 12,
+                        borderRadius: 14,
+                        border: "1px dashed rgba(255,255,255,0.14)",
+                        color: "var(--muted)",
+                        background: "rgba(0,0,0,0.18)",
+                        fontSize: 13,
+                      }}
+                    >
+                      No history yet.
+                    </div>
+                  )}
+
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {history.map((item) => {
+                      const id = item._id || item.id;
+                      const createdAt = item.createdAt || item.timestamp || item.date;
+                      const input = item.input || item.aiText || item.text || "";
+                      const title = makeTitle(input);
+
+                      return (
+                        <div
+
                       key={id}
                       className={`histItem ${"" /* dashboard has no "active" */}`}
                       onClick={() => openHistoryItem(id)}
@@ -941,6 +1452,8 @@ export default function DashboardPage() {
                   );
                 })}
               </div>
+                </>
+              )}
             </div>
           </aside>
 
@@ -1051,6 +1564,7 @@ export default function DashboardPage() {
                   </div>
 
                   <textarea
+                    ref={aiTextareaRef}
                     className="textarea"
                     value={aiText}
                     onChange={(e) => setAiText(e.target.value)}
@@ -1114,17 +1628,68 @@ export default function DashboardPage() {
                   </div>
 
                   <textarea
+                    ref={humanTextareaRef}
                     className="textarea"
                     value={humanText}
                     onChange={(e) => setHumanText(e.target.value)}
                     placeholder="Your humanised result will appear here..."
                   />
+
+                  {factCheck && factCheck.numbersPreserved === false && (
+                    <div style={{
+                      marginTop: 6, padding: "7px 10px", borderRadius: 8,
+                      background: "rgba(255,209,102,0.08)", border: "1px solid rgba(255,209,102,0.22)",
+                      color: "rgba(255,224,160,0.95)", fontSize: 12,
+                    }}>
+                      ⚠ Some numbers/dates from your original text may have changed during rewriting
+                      {factCheck.missingNumbers?.length ? ` (check: ${factCheck.missingNumbers.slice(0, 5).join(", ")})` : ""}.
+                      Please verify important figures and citations before using this output.
+                    </div>
+                  )}
                 </div>
               </div>
 
+              {/* FEATURE 3: progress steps — shown only while humanising */}
+              {loadingHumanise && (
+                <div className="progressWrap">
+                  {PROGRESS_STEPS.map((step, idx) => {
+                    const isActive = idx === activeStepIdx;
+                    const isDone = idx < activeStepIdx;
+                    const stepStart = step.at;
+                    const stepEnd = PROGRESS_STEPS[idx + 1]?.at ?? 1;
+                    const stepFraction = isDone
+                      ? 1
+                      : isActive
+                        ? Math.min(1, (progressFraction - stepStart) / Math.max(0.0001, stepEnd - stepStart))
+                        : 0;
+                    return (
+                      <div className="progressStepRow" key={step.label}>
+                        <span className={`progressStepLabel ${isActive ? "active" : ""}`}>
+                          {isDone ? "✓ " : ""}{step.label}
+                        </span>
+                        <div className="progressBarTrack">
+                          <div className="progressBarFill" style={{ width: `${Math.round(stepFraction * 100)}%` }} />
+                        </div>
+                        <span className="progressPercent">{Math.round(stepFraction * 100)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Humanise button + limit info — sits right under the editor, not below the analysis panel */}
               <div className="footerRow">
                 <div style={{ fontSize: 12, color: "var(--muted2)" }}>
-                  {remaining === 0 ? (
+                  {isGuest ? (
+                    guestUsed >= GUEST_TRY_LIMIT ? (
+                      <span style={{ color: "rgba(255,209,102,0.95)" }}>
+                        Free trial complete.{" "}
+                        <a href="/register" style={{ color: "#ffd166", fontWeight: 700 }}>Create a free account</a> to keep humanising.
+                      </span>
+                    ) : (
+                      <span>{GUEST_TRY_LIMIT - guestUsed} free {GUEST_TRY_LIMIT - guestUsed === 1 ? "try" : "tries"} left — sign up anytime to save your history.</span>
+                    )
+                  ) : remaining === 0 ? (
                     <span style={{ color: "rgba(255,120,120,0.95)" }}>
                       Daily limit reached.{" "}
                       <a href="/pricing" style={{ color: "#a78bfa", fontWeight: 700 }}>Upgrade →</a>
@@ -1135,14 +1700,21 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="actionRow">
-                  <button
-                    className="btnPrimary"
-                    onClick={handleHumanise}
-                    disabled={loadingHumanise || (wordCount > wordLimit && plan.toUpperCase() !== "UNLIMITED")}
-                    title={wordCount > wordLimit ? `Reduce text to under ${wordLimit} words` : ""}
-                  >
-                    {loadingHumanise ? "Working..." : "Humanise"}
-                  </button>
+                  {isGuest && guestUsed >= GUEST_TRY_LIMIT ? (
+                    <button className="btnPrimary" onClick={() => router.push("/register")}>
+                      Sign up to continue
+                    </button>
+                  ) : (
+                    <button
+                      className="btnPrimary"
+                      onClick={handleHumanise}
+                      disabled={loadingHumanise || (wordCount > wordLimit && plan.toUpperCase() !== "UNLIMITED")}
+                      title={wordCount > wordLimit ? `Reduce text to under ${wordLimit} words` : ""}
+                    >
+                      {/* FEATURE 1: countdown timer in the button label */}
+                      {loadingHumanise ? `Working… (~${remainingSeconds}s)` : "Humanise"}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1157,6 +1729,16 @@ export default function DashboardPage() {
                   {error}
                 </div>
               ) : null}
+
+              {/* FEATURE 5 + 6: auto AI score + highlighted click-to-rewrite — full width, below the button */}
+              <AiHighlightPanel
+                humanText={humanText}
+                setHumanText={setHumanText}
+                canUse={canUseProFeatures}
+                mode={mode}
+                router={router}
+                autoToken={autoScoreToken}
+              />
             </div>
           </main>
         </div>
