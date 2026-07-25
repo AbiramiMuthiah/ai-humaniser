@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import api from "../../lib/api";
 
@@ -271,7 +271,7 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, mode, router, autoT
   );
 }
 
-export default function DashboardPage() {
+function DashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -1746,5 +1746,13 @@ export default function DashboardPage() {
 
       {toast ? <div className="toast">{toast}</div> : null}
     </>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: 40, color: "rgba(255,255,255,0.7)", background: "#0b1022", minHeight: "100vh" }}>Loading…</div>}>
+      <DashboardContent />
+    </Suspense>
   );
 }
