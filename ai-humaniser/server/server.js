@@ -775,61 +775,83 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
     let humanised = postProcess(raw, isAcademic);
     let passesUsed = 1;
 
+    // ── Multi-pass adversarial loop ──
+    // Iteratively rewrites against the AUTHORITATIVE score (Sapling when
+    // configured, heuristic fallback otherwise) instead of stopping after
+    // one retry. Mirrors the "generate → test against detector → rewrite
+    // again if still flagged" loop used by commercial humanizers. Each pass
+    // is only kept if it (a) scored strictly better than the current best,
+    // (b) preserved meaning (word overlap + length ratio guard), and
+    // (c) didn't lose any number/date/stat that survived so far — so a
+    // pass chasing a lower score can never silently corrupt the content.
+    const MAX_PASSES = 5;
+    const TARGET_SCORE = 35; // stop early once authoritatively below this
+
     try {
-      const preCheck = heuristicDetect(humanised); // breakdown used for targeted fix instructions
-      const preAuth = await getAuthoritativeScore(humanised); // real accept/reject signal
-      if (preAuth.score >= 30) {
+      let bestText = humanised;
+      let bestAuth = await getAuthoritativeScore(bestText);
+
+      for (let pass = 2; pass <= MAX_PASSES && bestAuth.score > TARGET_SCORE; pass++) {
+        const breakdown = heuristicDetect(bestText).breakdown; // targeted fix instructions, not the score itself
         const problems = [];
-        if (preCheck.breakdown.burstiness.aiSignal > 45) {
-          problems.push("- Sentence lengths are still too uniform. Aggressively vary rhythm: mix short punchy sentences (5-8 words) with longer, complex ones (25+ words). Never allow 3 sentences of similar length in a row.");
+        if (breakdown.burstiness.aiSignal > 40) {
+          problems.push("- Sentence lengths are still too uniform (low burstiness). Mix very short punchy sentences (4-8 words) with long, complex ones (25-35 words with subordinate clauses). Never let 3 sentences in a row land within 5 words of each other in length.");
         }
-        if (preCheck.breakdown.vocabularyDiversity.aiSignal > 45) {
-          problems.push("- Word choice is repetitive. Replace repeated words with varied, natural alternatives — but never sacrifice meaning for a fancier word.");
+        if (breakdown.vocabularyDiversity.aiSignal > 40) {
+          problems.push("- Vocabulary is too predictable (low perplexity). Replace common, high-probability word choices with less expected but natural synonyms, idioms, and phrasing a specific person would actually use.");
         }
-        if (preCheck.breakdown.buzzwordDensity.aiSignal > 25) {
-          problems.push("- Still contains AI-associated stock phrases (furthermore, moreover, additionally, in conclusion, it is important to note, plays a crucial role, etc). Remove every one of them.");
+        if (breakdown.buzzwordDensity.aiSignal > 20) {
+          problems.push("- Still contains AI-fingerprint words/phrases (furthermore, moreover, additionally, in conclusion, it is important to note, plays a crucial role, delve, tapestry, testament, etc). Strip every one of them.");
         }
-        if (preCheck.breakdown.passiveVoice.aiSignal > 25) {
-          problems.push("- Too much passive voice. Convert passive constructions ('it was found that', 'is considered to be') to direct active voice.");
+        if (breakdown.passiveVoice.aiSignal > 20) {
+          problems.push("- Too much passive voice. Convert passive constructions ('it was found that', 'is considered to be') to direct, active phrasing.");
         }
-        if (problems.length === 0) {
-          problems.push("- The overall rhythm and word choice still read as machine-generated. Rework the phrasing so it sounds like a specific person wrote it, not a template.");
+        problems.push("- Restructure at least one paragraph's rhythm entirely — don't just swap words, change how the ideas connect and flow between sentences.");
+        if (problems.length === 1) {
+          problems.unshift("- The overall rhythm and word choice still statistically resemble machine-generated text. Rework the phrasing so it reads like a specific person wrote it under time pressure, not a polished template.");
         }
 
-        const critiqueSystem = `You are a meticulous human copy-editor doing a second pass on a draft that still reads as AI-written. Fix ONLY the specific problems listed. Preserve the exact meaning, all facts, numbers, names, and citations — never alter a digit or figure. Do not shorten the text significantly. Output ONLY the revised passage — no preamble, no explanation.`;
+        const critiqueSystem = `You are a meticulous human editor doing another pass on a draft that a real AI-detection classifier still flags as machine-written. Fix ONLY the specific problems listed, attacking perplexity (word predictability) and burstiness (sentence-length variation) — the two statistical fingerprints detectors rely on most. Preserve the exact meaning, all facts, numbers, names, and citations — never alter a digit or figure. Do not shorten the text significantly. Output ONLY the revised passage — no preamble, no explanation.`;
         const critiquePrompt = [
-          "This passage still shows signs of AI-generated writing. Specific problems to fix:",
+          `This is rewrite pass ${pass} of ${MAX_PASSES}. A real AI detector still scores this passage as ${bestAuth.score}% AI-likely (source: ${bestAuth.source}). Specific problems to fix:`,
           "",
           problems.join("\n"),
           "",
           "Passage:",
-          humanised,
+          bestText,
         ].join("\n");
 
-        const revisedRaw = await generateWithRetries(critiqueSystem, critiquePrompt, 1.15);
+        // Slightly raise temperature each pass so it doesn't converge on the same stuck rewrite.
+        const passTemp = Math.min(1.4, 1.15 + pass * 0.05);
+        const revisedRaw = await generateWithRetries(critiqueSystem, critiquePrompt, passTemp);
         const revised = postProcess(stripAiFormatting(revisedRaw), isAcademic);
-        const postAuth = await getAuthoritativeScore(revised);
+        const revisedAuth = await getAuthoritativeScore(revised);
 
-        const overlap = wordOverlapRatio(humanised, revised);
-        const wordsBefore = Math.max(1, (humanised.match(/\S+/g) || []).length);
+        const overlap = wordOverlapRatio(bestText, revised);
+        const wordsBefore = Math.max(1, (bestText.match(/\S+/g) || []).length);
         const wordsAfter = (revised.match(/\S+/g) || []).length;
         const lengthRatio = wordsAfter / wordsBefore;
-        const pass1MissingNumbers = originalNumbers.filter(n => !humanised.includes(n));
+        const bestMissingNumbers = originalNumbers.filter(n => !bestText.includes(n));
         const revisedMissingNumbers = originalNumbers.filter(n => !revised.includes(n));
 
-        const scoredBetter = postAuth.score < preAuth.score;
+        const scoredBetter = revisedAuth.score < bestAuth.score;
         const meaningPreserved = overlap >= 0.5 && lengthRatio >= 0.75 && lengthRatio <= 1.3;
-        const noNewNumberLoss = revisedMissingNumbers.length <= pass1MissingNumbers.length;
+        const noNewNumberLoss = revisedMissingNumbers.length <= bestMissingNumbers.length;
 
         if (scoredBetter && meaningPreserved && noNewNumberLoss) {
-          humanised = revised;
-          passesUsed = 2;
+          bestText = revised;
+          bestAuth = revisedAuth;
+          passesUsed = pass;
         } else if (scoredBetter && !meaningPreserved) {
-          console.warn("Second humanise pass scored better but drifted too far from the source (overlap/length check failed) — keeping first-pass result.");
+          console.warn(`Pass ${pass} scored better (${revisedAuth.score}%) but drifted too far from source — discarding, keeping pass ${passesUsed}.`);
+        } else {
+          console.warn(`Pass ${pass} did not improve on ${bestAuth.score}% (${bestAuth.source}) — discarding, keeping pass ${passesUsed}.`);
         }
       }
+
+      humanised = bestText;
     } catch (e) {
-      console.warn("Second humanise pass failed, keeping first-pass result:", e.message);
+      console.warn("Multi-pass humanise loop failed partway through, keeping best result so far:", e.message);
     }
 
     const missingNumbers = originalNumbers.filter(n => !humanised.includes(n));
