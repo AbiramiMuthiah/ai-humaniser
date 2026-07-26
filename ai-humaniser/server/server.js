@@ -3,6 +3,7 @@ require("dotenv").config({ path: require("path").join(__dirname, "../.env") });
 const express = require("express");
 const cors = require("cors");
 const Stripe = require("stripe");
+const jwt = require("jsonwebtoken");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const multer = require("multer");
 
@@ -180,6 +181,36 @@ function isProOrUnlimited(plan) {
 function isBasicOrAbove(plan) {
   const p = String(plan || "free").toLowerCase();
   return p === "basic" || p === "pro" || p === "unlimited";
+}
+
+// ── Optional-auth gate for AI detection ──
+// Detection is available to EVERYONE — guests and every paid tier — rather
+// than gated by plan. The natural limiter is each tier's existing daily
+// humanise allowance (2 guest trials, 5/day free, 15/day basic, 50/day pro,
+// 150/day unlimited), so Basic effectively gets a "limited" amount for free
+// without a separate counter. Guests must have already used at least one
+// trial (proves a real session) so this can't be hit cold with no guestId
+// history.
+async function canUseDetectionGate(req) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (token) {
+    try {
+      jwt.verify(token, process.env.JWT_SECRET);
+      return { allowed: true };
+    } catch {
+      // fall through to guest check below
+    }
+  }
+  const guestId = req.headers["x-guest-id"];
+  if (!guestId) {
+    return { allowed: false, message: "Log in, or humanise some text as a guest first, to use AI detection." };
+  }
+  const guest = await GuestUsage.findOne({ guestId });
+  if (!guest || guest.count < 1) {
+    return { allowed: false, message: "Try humanising some text first to unlock AI detection." };
+  }
+  return { allowed: true };
 }
 
 function stripAiFormatting(text) {
@@ -424,12 +455,11 @@ function heuristicDetect(text) {
   return { score, breakdown, confidence };
 }
 
-app.post("/detect-score", authMiddleware, async (req, res) => {
+app.post("/detect-score", async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    if (!isBasicOrAbove(user.plan)) {
-      return res.status(403).json({ message: "AI detector score is available on Basic, Pro, and Unlimited plans only.", upgradeRequired: true });
+    const gate = await canUseDetectionGate(req);
+    if (!gate.allowed) {
+      return res.status(403).json({ message: gate.message, upgradeRequired: false });
     }
     const { text } = req.body;
     if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short to score." });
@@ -499,12 +529,11 @@ function heuristicSentenceScore(sentence, allSentences) {
   return Math.max(2, Math.min(97, Math.round(raw)));
 }
 
-app.post("/detect-score-sentences", authMiddleware, async (req, res) => {
+app.post("/detect-score-sentences", async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    if (!isBasicOrAbove(user.plan)) {
-      return res.status(403).json({ message: "Sentence-level AI highlighting is available on Basic, Pro, and Unlimited plans only.", upgradeRequired: true });
+    const gate = await canUseDetectionGate(req);
+    if (!gate.allowed) {
+      return res.status(403).json({ message: gate.message, upgradeRequired: false });
     }
     const { text } = req.body;
     if (!text || text.trim().length < 5) return res.status(400).json({ message: "Text too short to score." });
