@@ -20,10 +20,12 @@ function makeTitle(input) {
 }
 
 // Rough estimate of how long a humanise call will take, based on word count.
-// Tuned around a ~6s floor plus ~0.09s per word, capped so the UI stays sane.
+// Raised ceiling since the backend can now run up to 5 rewrite passes when
+// text keeps scoring above the target — worst case takes noticeably longer
+// than the old single-pass flow.
 function estimateDuration(wordCount) {
-  const est = 6 + wordCount * 0.09;
-  return Math.max(6, Math.min(45, Math.round(est)));
+  const est = 10 + wordCount * 0.15;
+  return Math.max(8, Math.min(95, Math.round(est)));
 }
 
 // FEATURE 3: progress steps shown while a humanise request is in flight.
