@@ -383,7 +383,7 @@ function DashboardContent() {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    const max = 460; // px
+    const max = 720; // px
     el.style.height = Math.min(el.scrollHeight, max) + "px";
   }
 
@@ -986,9 +986,9 @@ function DashboardContent() {
 
         .textarea {
           width: 100%;
-          height: 220px;
-          min-height: 220px;
-          max-height: 460px;
+          height: 420px;
+          min-height: 420px;
+          max-height: 720px;
           overflow-y: auto;
           resize: none;
           border-radius: 14px;
