@@ -104,7 +104,7 @@ function CopyButton({ text }) {
 // Runs automatically whenever a fresh humanised result comes in (Pro/Unlimited only).
 // High-AI sentences get a red highlight, borderline ones amber, clean ones no highlight.
 // Clicking any sentence rewrites it in place and re-scores.
-function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, router, autoToken }) {
+function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, router, autoToken, isGuest, guestId }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [overallScore, setOverallScore] = useState(null);
@@ -120,9 +120,12 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
     setErr("");
     setLoading(true);
     try {
+      // Guests have no JWT, so send their guestId so the backend can verify
+      // they've used at least one trial (see canUseDetectionGate server-side).
+      const config = isGuest && guestId ? { headers: { "x-guest-id": guestId } } : undefined;
       const [overallRes, sentRes] = await Promise.all([
-        api.post("/detect-score", { text }),
-        api.post("/detect-score-sentences", { text }),
+        api.post("/detect-score", { text }, config),
+        api.post("/detect-score-sentences", { text }, config),
       ]);
       // If a newer request has started since this one fired, drop this result.
       if (myRequestId !== requestIdRef.current) return;
@@ -360,11 +363,10 @@ function DashboardContent() {
     return p === "PRO" || p === "UNLIMITED";
   }, [plan]);
 
-  // FEATURE 5: AI detection score + highlighting — available from Basic plan up
-  const canUseDetection = useMemo(() => {
-    const p = plan.toUpperCase();
-    return p === "BASIC" || p === "PRO" || p === "UNLIMITED";
-  }, [plan]);
+  // FEATURE 5: AI detection is now open to guests and every logged-in plan —
+  // the server's own gate (server.js: canUseDetectionGate) is the real check,
+  // limited in practice by each tier's existing daily/trial allowance.
+  const canUseDetection = true;
 
   // FEATURE 6: click-to-rewrite — stays Pro/Unlimited only (heavier Gemini cost per click)
   const canUseRewrite = useMemo(() => {
@@ -1785,6 +1787,8 @@ function DashboardContent() {
                 mode={mode}
                 router={router}
                 autoToken={autoScoreToken}
+                isGuest={isGuest}
+                guestId={guestId}
               />
             </div>
           </main>
