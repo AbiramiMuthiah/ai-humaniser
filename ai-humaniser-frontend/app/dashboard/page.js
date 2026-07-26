@@ -774,7 +774,8 @@ function DashboardContent() {
         .historySidebar {
           position: sticky;
           top: 74px;
-          height: calc(100vh - 92px);
+          height: fit-content;
+          max-height: calc(100vh - 92px);
           border-radius: 18px;
           background: linear-gradient(
             180deg,
@@ -843,7 +844,7 @@ function DashboardContent() {
         }
 
         .historyBody {
-          height: calc(100% - 56px);
+          max-height: calc(100vh - 148px);
           overflow-y: auto;
           padding: 10px;
         }
