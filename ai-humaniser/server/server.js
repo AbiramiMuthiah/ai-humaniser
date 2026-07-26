@@ -629,6 +629,22 @@ app.get("/me", authMiddleware, async (req, res) => {
 });
 
 /* ── HUMANISE ── */
+// ── Authoritative score for the retry-loop's accept/reject decision ──
+// The heuristic scorer below is what generated postProcess()'s countermeasures,
+// so using it to grade its own output is circular — it will always look good
+// to itself. When a real SAPLING_API_KEY is configured, use Sapling's actual
+// trained-classifier score to decide whether a revision genuinely improved,
+// falling back to the heuristic only when Sapling is unavailable/fails.
+async function getAuthoritativeScore(text) {
+  try {
+    const saplingScore = await saplingDetect(text);
+    if (saplingScore !== null) return { score: saplingScore, source: "sapling" };
+  } catch (e) {
+    console.warn("Sapling authoritative score failed, falling back to heuristic:", e.message);
+  }
+  return { score: heuristicDetect(text).score, source: "heuristic" };
+}
+
 async function humaniseText(text, mode = "standard") {
     const isAcademic = mode === "academic" || mode === "professional";
 
@@ -760,8 +776,9 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
     let passesUsed = 1;
 
     try {
-      const preCheck = heuristicDetect(humanised);
-      if (preCheck.score >= 30) {
+      const preCheck = heuristicDetect(humanised); // breakdown used for targeted fix instructions
+      const preAuth = await getAuthoritativeScore(humanised); // real accept/reject signal
+      if (preAuth.score >= 30) {
         const problems = [];
         if (preCheck.breakdown.burstiness.aiSignal > 45) {
           problems.push("- Sentence lengths are still too uniform. Aggressively vary rhythm: mix short punchy sentences (5-8 words) with longer, complex ones (25+ words). Never allow 3 sentences of similar length in a row.");
@@ -791,7 +808,7 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
 
         const revisedRaw = await generateWithRetries(critiqueSystem, critiquePrompt, 1.15);
         const revised = postProcess(stripAiFormatting(revisedRaw), isAcademic);
-        const postCheck = heuristicDetect(revised);
+        const postAuth = await getAuthoritativeScore(revised);
 
         const overlap = wordOverlapRatio(humanised, revised);
         const wordsBefore = Math.max(1, (humanised.match(/\S+/g) || []).length);
@@ -800,7 +817,7 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
         const pass1MissingNumbers = originalNumbers.filter(n => !humanised.includes(n));
         const revisedMissingNumbers = originalNumbers.filter(n => !revised.includes(n));
 
-        const scoredBetter = postCheck.score < preCheck.score;
+        const scoredBetter = postAuth.score < preAuth.score;
         const meaningPreserved = overlap >= 0.5 && lengthRatio >= 0.75 && lengthRatio <= 1.3;
         const noNewNumberLoss = revisedMissingNumbers.length <= pass1MissingNumbers.length;
 
