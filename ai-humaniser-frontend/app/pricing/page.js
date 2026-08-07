@@ -52,7 +52,7 @@ export default function PricingPage() {
         "View history",
         "Standard mode",
       ],
-      notIncluded: ["File upload", "Academic & creative modes", "AI detector credits"],
+      notIncluded: ["File upload", "Professional & academic modes", "AI detector credits"],
     },
     {
       id: "basic",
@@ -71,7 +71,7 @@ export default function PricingPage() {
         "Standard & casual modes",
         "Private rewriting model",
       ],
-      notIncluded: ["Academic & creative modes", "AI detector credits"],
+      notIncluded: ["Professional & academic modes", "AI detector credits"],
     },
     {
       id: "pro",
@@ -90,7 +90,7 @@ export default function PricingPage() {
         "View history",
         "All 4 rewrite modes",
         "Private rewriting model",
-        "100 AI detector credits/month",
+        "100 AI detector credits/month (coming soon)",
         "Docs upload + humanise (text PDFs)",
       ],
     },
@@ -110,10 +110,10 @@ export default function PricingPage() {
         "View history",
         "All 4 rewrite modes",
         "Private rewriting model",
-        "200 AI detector credits/month",
+        "200 AI detector credits/month (coming soon)",
         "Docs upload + humanise",
-        "OCR for scanned PDFs",
-        "Priority support",
+        "OCR for scanned PDFs (coming soon)",
+        
       ],
     },
   ], []);
@@ -228,7 +228,7 @@ export default function PricingPage() {
                   <div>
                     <div style={s.planName}>{p.name}</div>
                   </div>
-                  {p.save && <div style={s.saveBadge}>{p.save}</div>}
+                  {billing === "yearly" && p.save && <div style={s.saveBadge}>{p.save}</div>}
                 </div>
 
                 <div style={s.priceRow}>
