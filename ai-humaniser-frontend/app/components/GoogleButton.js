@@ -36,14 +36,11 @@ export default function GoogleButton({ onDone }) {
         }}
         onError={() => {
           alert(
-            "Google sign-in didn't open. This is usually caused by an ad blocker " +
-            "or privacy extension blocking the sign-in popup.\n\n" +
-            "Try disabling it for this site, use a private/incognito window, " +
-            "or sign in with your email and password instead."
+            "Google sign-in was blocked by your browser.\n\n" +
+            "To fix: Click the popup blocked icon in your address bar and select 'Always allow popups from this site'.\n\n" +
+            "Or sign in with email and password instead."
           );
         }}
-        ux_mode="redirect"
-        redirect_uri="https://ai-humaniser-ecru.vercel.app/login"
         useOneTap={false}
         theme="outline"
         size="large"
