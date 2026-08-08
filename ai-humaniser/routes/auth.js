@@ -83,38 +83,46 @@ router.post("/login", async (req, res) => {
 });
 
 /* ── Google OAuth ──────────────────────────── */
-// ✅ NEW: GoogleButton calls POST /auth/google — this was missing entirely
 router.post("/google", async (req, res) => {
   try {
-    const { credential } = req.body;
-    if (!credential) {
+    const { credential, googleUser } = req.body;
+
+    let googleId, email, name, email_verified;
+
+    if (googleUser) {
+      // New flow: useGoogleLogin hook sends googleUser object
+      email = googleUser.email;
+      name = googleUser.name;
+      googleId = googleUser.googleId;
+      email_verified = true;
+    } else if (credential) {
+      // Old flow: GoogleLogin component sends JWT credential
+      const parts = credential.split(".");
+      if (parts.length !== 3) {
+        return res.status(400).json({ message: "Invalid Google token format" });
+      }
+      let payload;
+      try {
+        payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+      } catch {
+        return res.status(400).json({ message: "Could not decode Google token" });
+      }
+      googleId = payload.sub;
+      email = payload.email;
+      name = payload.name;
+      email_verified = payload.email_verified;
+    } else {
       return res.status(400).json({ message: "Missing Google credential" });
     }
 
-    // Decode the JWT from Google (it's a standard JWT, no secret needed to read payload)
-    const parts = credential.split(".");
-    if (parts.length !== 3) {
-      return res.status(400).json({ message: "Invalid Google token format" });
-    }
-
-    let payload;
-    try {
-      payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-    } catch {
-      return res.status(400).json({ message: "Could not decode Google token" });
-    }
-
-    const { sub: googleId, email, name, email_verified } = payload;
-
     if (!email || !googleId) {
-      return res.status(400).json({ message: "Google token missing email or sub" });
+      return res.status(400).json({ message: "Google token missing email or id" });
     }
 
     // Find or create user
     let user = await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
-      // New user via Google
       user = await User.create({
         name: name || email.split("@")[0],
         email: email.toLowerCase(),
@@ -124,7 +132,6 @@ router.post("/google", async (req, res) => {
         plan: "free",
       });
     } else if (!user.googleId) {
-      // Existing email user — link Google
       user.googleId = googleId;
       user.provider = "google";
       await user.save();
