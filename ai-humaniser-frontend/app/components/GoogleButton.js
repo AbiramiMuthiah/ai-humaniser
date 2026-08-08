@@ -25,11 +25,9 @@ export default function GoogleButton({ onDone }) {
               return;
             }
 
-            // ✅ store token + user so plan updates in dashboard
             localStorage.setItem("token", token);
             if (user) localStorage.setItem("user", JSON.stringify(user));
 
-            // ✅ notify parent (Register/Login) with payload
             onDone?.({ token, user });
           } catch (e) {
             console.error(e);
@@ -37,10 +35,6 @@ export default function GoogleButton({ onDone }) {
           }
         }}
         onError={() => {
-          // Most Google login failures here are caused by an ad blocker or
-          // privacy extension blocking the sign-in popup, not an actual
-          // Google/account error. Give people a way to self-resolve instead
-          // of a generic dead-end message.
           alert(
             "Google sign-in didn't open. This is usually caused by an ad blocker " +
             "or privacy extension blocking the sign-in popup.\n\n" +
@@ -48,6 +42,8 @@ export default function GoogleButton({ onDone }) {
             "or sign in with your email and password instead."
           );
         }}
+        ux_mode="redirect"
+        redirect_uri="https://ai-humaniser-ecru.vercel.app/login"
         useOneTap={false}
         theme="outline"
         size="large"
