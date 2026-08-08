@@ -363,18 +363,30 @@ function postProcess(text, isAcademic) {
 /* ══════════════════════════════════════════════════════════
    FEATURE 5 — AI DETECTOR SCORE
 ══════════════════════════════════════════════════════════ */
-async function saplingDetect(text) {
-  const key = process.env.SAPLING_API_KEY;
+// ZeroGPT's detectText endpoint (hosted on RapidAPI). Returns both an overall
+// AI-likelihood percentage and the list of sentences it flagged as GPT-like —
+// the latter is reused by the sentence-level route below instead of making
+// a second paid call. Returns null when no key is configured.
+async function zeroGptDetect(text) {
+  const key = process.env.ZEROGPT_API_KEY;
   if (!key) return null;
-  const resp = await fetch("https://api.sapling.ai/api/v1/aidetect", {
+  const resp = await fetch("https://zerogpt.p.rapidapi.com/api/v1/detectText", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key, text }),
+    headers: {
+      "Content-Type": "application/json",
+      "X-RapidAPI-Key": key,
+      "X-RapidAPI-Host": "zerogpt.p.rapidapi.com",
+    },
+    body: JSON.stringify({ input_text: text }),
   });
-  if (!resp.ok) throw new Error(`Sapling API error: ${resp.status}`);
+  if (!resp.ok) throw new Error(`ZeroGPT API error: ${resp.status}`);
   const data = await resp.json();
-  const score = typeof data.score === "number" ? Math.round(data.score * 100) : null;
-  return score;
+  const pct = data?.data?.is_gpt_generated;
+  const score = typeof pct === "number" ? Math.round(pct) : null;
+  const flaggedSentences = Array.isArray(data?.data?.gpt_generated_sentences)
+    ? data.data.gpt_generated_sentences.map(s => String(s).trim())
+    : [];
+  return { score, flaggedSentences };
 }
 
 const BUZZWORD_PATTERN = /\b(furthermore|moreover|additionally|consequently|nevertheless|subsequently|utilize|facilitate|demonstrate|individuals|optimal|paradigm|robust|leverage|delve|nuanced|seamless|cutting-edge|state-of-the-art|tapestry|testament|pivotal|profound|undeniably|underscore|showcase|garner|fostering|vibrant|intricate|in conclusion|it is important to note|it is worth noting|plays a crucial role)\b/gi;
@@ -479,10 +491,10 @@ app.post("/detect-score", async (req, res) => {
     let score, breakdown = null, confidence = null;
     let source = "heuristic";
     try {
-      const saplingScore = await saplingDetect(text);
-      if (saplingScore !== null) { score = saplingScore; source = "sapling"; }
+      const zeroGptResult = await zeroGptDetect(text);
+      if (zeroGptResult && zeroGptResult.score !== null) { score = zeroGptResult.score; source = "zerogpt"; }
     } catch (e) {
-      console.warn("Sapling detect failed, falling back to heuristic:", e.message);
+      console.warn("ZeroGPT detect failed, falling back to heuristic:", e.message);
     }
     if (score === undefined) {
       const result = heuristicDetect(text);
@@ -546,23 +558,27 @@ app.post("/detect-score-sentences", async (req, res) => {
       return res.json({ sentences: sentences.map(s => ({ sentence: s, score: null })), reliable: false, minWords: MIN_RELIABLE_WORDS });
     }
 
+    // ZeroGPT doesn't return a per-sentence probability array like Sapling did —
+    // it returns the overall AI-likelihood plus a list of the sentences it flagged
+    // as GPT-generated. We approximate per-sentence scores from that: flagged
+    // sentences get pushed toward the overall score (floored at 60), everything
+    // else gets pulled down (capped at 30), so the highlight UI still lights up
+    // the right passages.
     let scored = null;
-    const key = process.env.SAPLING_API_KEY;
+    const key = process.env.ZEROGPT_API_KEY;
     if (key) {
       try {
-        const resp = await fetch("https://api.sapling.ai/api/v1/aidetect", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, text, score_sentences: true }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (Array.isArray(data.sentence_scores) && data.sentence_scores.length === sentences.length) {
-            scored = sentences.map((s, i) => ({ sentence: s, score: Math.round(data.sentence_scores[i] * 100) }));
-          }
+        const result = await zeroGptDetect(text);
+        if (result && result.score !== null) {
+          const flagged = result.flaggedSentences;
+          scored = sentences.map(s => {
+            const isFlagged = flagged.some(f => f && (s.includes(f) || f.includes(s)));
+            const score = isFlagged ? Math.max(result.score, 60) : Math.min(result.score, 30);
+            return { sentence: s, score };
+          });
         }
       } catch (e) {
-        console.warn("Sapling sentence-level detect failed, falling back to heuristic:", e.message);
+        console.warn("ZeroGPT sentence-level detect failed, falling back to heuristic:", e.message);
       }
     }
     if (!scored) {
@@ -632,15 +648,15 @@ app.get("/me", authMiddleware, async (req, res) => {
 // ── Authoritative score for the retry-loop's accept/reject decision ──
 // The heuristic scorer below is what generated postProcess()'s countermeasures,
 // so using it to grade its own output is circular — it will always look good
-// to itself. When a real SAPLING_API_KEY is configured, use Sapling's actual
+// to itself. When a real ZEROGPT_API_KEY is configured, use ZeroGPT's actual
 // trained-classifier score to decide whether a revision genuinely improved,
-// falling back to the heuristic only when Sapling is unavailable/fails.
+// falling back to the heuristic only when ZeroGPT is unavailable/fails.
 async function getAuthoritativeScore(text) {
   try {
-    const saplingScore = await saplingDetect(text);
-    if (saplingScore !== null) return { score: saplingScore, source: "sapling" };
+    const zeroGptResult = await zeroGptDetect(text);
+    if (zeroGptResult && zeroGptResult.score !== null) return { score: zeroGptResult.score, source: "zerogpt" };
   } catch (e) {
-    console.warn("Sapling authoritative score failed, falling back to heuristic:", e.message);
+    console.warn("ZeroGPT authoritative score failed, falling back to heuristic:", e.message);
   }
   return { score: heuristicDetect(text).score, source: "heuristic" };
 }
@@ -776,7 +792,7 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
     let passesUsed = 1;
 
     // ── Multi-pass adversarial loop ──
-    // Iteratively rewrites against the AUTHORITATIVE score (Sapling when
+    // Iteratively rewrites against the AUTHORITATIVE score (ZeroGPT when
     // configured, heuristic fallback otherwise) instead of stopping after
     // one retry. Mirrors the "generate → test against detector → rewrite
     // again if still flagged" loop used by commercial humanizers. Each pass
