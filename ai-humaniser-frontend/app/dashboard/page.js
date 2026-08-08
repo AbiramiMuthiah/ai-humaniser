@@ -197,8 +197,8 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
 
   const overallColor =
     overallScore === null ? "rgba(255,255,255,0.6)" :
-    overallScore >= 70 ? "#ff8a80" :
-    overallScore >= 35 ? "#ffd166" : "#7defa0";
+      overallScore >= 70 ? "#ff8a80" :
+        overallScore >= 35 ? "#ffd166" : "#7defa0";
 
   // Use scored sentences if available, otherwise plain split (before first score comes back).
   const displaySentences = sentenceScores.length
@@ -1425,48 +1425,48 @@ function DashboardContent() {
                       return (
                         <div
 
-                      key={id}
-                      className={`histItem ${"" /* dashboard has no "active" */}`}
-                      onClick={() => openHistoryItem(id)}
-                    >
-                      {historyOpen ? (
-                        <>
-                          <div className="histTitle">{title}</div>
-                          <div className="histMeta">
-                            <span>{createdAt ? new Date(createdAt).toLocaleString() : ""}</span>
+                          key={id}
+                          className={`histItem ${"" /* dashboard has no "active" */}`}
+                          onClick={() => openHistoryItem(id)}
+                        >
+                          {historyOpen ? (
+                            <>
+                              <div className="histTitle">{title}</div>
+                              <div className="histMeta">
+                                <span>{createdAt ? new Date(createdAt).toLocaleString() : ""}</span>
 
-                            <button
-                              className="dotsBtn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMenuOpenId((prev) => (prev === id ? null : id));
-                              }}
-                              aria-label="More"
-                              title="More"
-                            >
-                              ⋯
-                            </button>
-                          </div>
+                                <button
+                                  className="dotsBtn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setMenuOpenId((prev) => (prev === id ? null : id));
+                                  }}
+                                  aria-label="More"
+                                  title="More"
+                                >
+                                  ⋯
+                                </button>
+                              </div>
 
-                          {menuOpenId === id && (
-                            <div
-                              className="menu"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                              }}
-                            >
-                              <button onClick={() => openHistoryItem(id)}>Open</button>
-                              <button className="danger" onClick={() => deleteHistoryItem(id)}>
-                                Delete
-                              </button>
-                            </div>
-                          )}
-                        </>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
+                              {menuOpenId === id && (
+                                <div
+                                  className="menu"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                  }}
+                                >
+                                  <button onClick={() => openHistoryItem(id)}>Open</button>
+                                  <button className="danger" onClick={() => deleteHistoryItem(id)}>
+                                    Delete
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </>
               )}
             </div>
@@ -1475,7 +1475,7 @@ function DashboardContent() {
           {/* Main */}
           <main className="dashMain">
 
-            
+
 
             <div className="editorCard" ref={editorRef} style={{ flex: 1 }}>
               <div className="twoCols">
@@ -1499,11 +1499,11 @@ function DashboardContent() {
                           WebkitAppearance: "auto",
                         }}
                       >
-                        <option value="standard"  style={{ background: "#0f1224", color: "#fff" }}>Standard</option>
+                        <option value="standard" style={{ background: "#0f1224", color: "#fff" }}>Standard</option>
                         <option value="professional" style={{ background: "#0f1224", color: "#fff" }}>Professional ✦</option>
-                        <option value="academic"  style={{ background: "#0f1224", color: "#fff" }}>Academic</option>
-                        <option value="creative"  style={{ background: "#0f1224", color: "#fff" }}>Creative</option>
-                        <option value="casual"    style={{ background: "#0f1224", color: "#fff" }}>Casual</option>
+                        <option value="academic" style={{ background: "#0f1224", color: "#fff" }}>Academic</option>
+                        <option value="creative" style={{ background: "#0f1224", color: "#fff" }}>Creative</option>
+                        <option value="casual" style={{ background: "#0f1224", color: "#fff" }}>Casual</option>
                       </select>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1738,7 +1738,15 @@ function DashboardContent() {
                         <a href="/pricing" style={{ color: "#a78bfa", fontWeight: 700 }}>Upgrade →</a>
                       </span>
                     ) : (
-                      <span>Output is saved to history.</span>
+                      <span>
+                        Output is saved to history. ·{" "}
+                        <a
+                          href="mailto:astechnologiesinfos@gmail.com"
+                          style={{ color: "rgba(255,255,255,0.35)", textDecoration: "none" }}
+                        >
+                          Support
+                        </a>
+                      </span>
                     )}
                   </div>
 
