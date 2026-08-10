@@ -277,45 +277,25 @@ const PERPLEXITY_SWAPS = [
   [/\bThis (?:clearly |obviously )?indicates\b/gi, () => pick(["This means", "This suggests", "This points to"])],
 ];
 
-/* ── Pillar 2: Burstiness injector ── */
+/* ── Pillar 2: Burstiness (deliberately minimal) ──
+   Earlier versions mechanically split/joined sentences by regex on a fixed
+   probability schedule. That's a rigid, repeatable transformation — applied
+   across thousands of outputs it becomes its own detectable fingerprint,
+   and it also produces awkward, sometimes-broken joins. Real sentence-length
+   variation should come from Gemini actually writing varied sentences (see
+   the softened prompts in humaniseText() below), not from mechanically
+   chopping its output afterward. Left as a no-op passthrough so postProcess()
+   doesn't need restructuring, but it does nothing. */
 function injectBurstiness(text) {
-  const paragraphs = text.split(/\n\n+/);
-  return paragraphs.map(para => {
-    if (!para.trim()) return para;
-    const sentences = para.match(/[^.!?]+[.!?]+/g) || [para];
-    if (sentences.length < 3) return para;
-    const result = [];
-    let i = 0;
-    while (i < sentences.length) {
-      const s = sentences[i].trim();
-      const wordCount = s.split(/\s+/).length;
-      if (wordCount >= 15 && wordCount <= 25 && i < sentences.length - 1) {
-        const r = Math.random();
-        if (r < 0.3) {
-          const split = s.replace(
-            /^(.{60,}?),\s+(and|but|which|so|while|although|however)\s+/i,
-            (m, before, conj) => {
-              const conjMap = { and: "And", but: "But", which: "This", so: "So", while: "Meanwhile,", although: "Although", however: "However," };
-              return before + '. ' + (conjMap[conj.toLowerCase()] || conj.charAt(0).toUpperCase() + conj.slice(1)) + ' ';
-            }
-          );
-          result.push(split);
-        } else if (r < 0.5 && i + 1 < sentences.length) {
-          const next = sentences[i + 1].trim();
-          if (next.split(/\s+/).length < 12) {
-            const connector = pick([" — ", "; ", ", and ", ", but "]);
-            result.push(s.replace(/[.!?]+$/, '') + connector + next.charAt(0).toLowerCase() + next.slice(1));
-            i += 2; continue;
-          } else { result.push(s); }
-        } else { result.push(s); }
-      } else { result.push(s); }
-      i++;
-    }
-    return result.join(' ');
-  }).join('\n\n');
+  return text;
 }
 
-/* ── Pillar 3: Low-probability token injector ── */
+/* ── Pillar 3: Low-probability token injector ──
+   Contractions are a genuine, natural human signal, so those stay. Earlier
+   versions also mechanically rewrote paragraph openers from a fixed lookup
+   table (e.g. "The main " → "Mainly, the "). That's applied identically
+   across every output regardless of context — a template swap, not real
+   variation — so it's been removed rather than kept as noise. */
 function injectLowProbTokens(text, isAcademic = false) {
   let out = text;
   if (!isAcademic) {
@@ -333,20 +313,7 @@ function injectLowProbTokens(text, isAcademic = false) {
       out = out.replace(pattern, (match) => Math.random() < 0.65 ? replacement : match);
     }
   }
-  // Vary paragraph openers
-  const paragraphs = out.split(/\n\n+/);
-  const starters = isAcademic
-    ? [["The results ", "These findings "], ["The study ", "This research "], ["The data ", "These data "], ["The main ", "A primary "], ["The key ", "A central "]]
-    : [["The main ", "Mainly, the "], ["The key ", "One key "], ["The primary ", "A primary "], ["The most important ", "What matters most is "]];
-  const result = paragraphs.map((para, idx) => {
-    if (idx === 0) return para;
-    let p = para;
-    for (const [from, to] of starters) {
-      if (p.startsWith(from)) { p = to + p.slice(from.length); break; }
-    }
-    return p;
-  });
-  return result.join('\n\n');
+  return out;
 }
 
 /* ── Master post-processor ── */
@@ -676,120 +643,87 @@ async function humaniseText(text, mode = "standard") {
     let systemInstruction = "";
     let userPrompt = "";
 
+    // NOTE ON APPROACH: earlier versions of this prompt gave the model rigid,
+    // countable rules ("every paragraph needs 1 sentence of 6-10 words, 1-2 of
+    // 14-20 words, 1 of 24-35 words"). Applied identically to every request,
+    // that kind of formula becomes its own detectable pattern — a different
+    // fingerprint than the one it was trying to erase, not a real fix. The
+    // prompts below describe what natural human writing actually looks like
+    // and let the model vary rhythm organically instead of hitting a quota.
     if (isAcademic) {
-      systemInstruction = `You are a human academic writer rewriting AI-generated text to pass Turnitin and GPTZero AI detection.
+      systemInstruction = `You are a specific human academic — not a template — rewriting AI-drafted text in your own authentic voice.
 
-WHAT DETECTORS MEASURE — attack all three:
+Real academic writing varies in rhythm because the writer's thinking varies: a claim gets a short, blunt sentence; the reasoning behind it runs longer and more layered. Don't force a length pattern — let the idea decide how long the sentence needs to be. Some paragraphs will naturally run more even, others more jagged. That inconsistency IS the human signal; don't manufacture it mechanically.
 
-1. BURSTINESS (most important for academic):
-Academic AI text is extremely uniform — every sentence is 18-22 words. Real academics vary dramatically.
-MANDATORY pattern per paragraph:
-- 1 short analytical punch (6-10 words): "This finding challenges prior assumptions."
-- 1-2 medium explanatory sentences (14-20 words)  
-- 1 long complex argument (24-35 words with subordinate clauses)
-NEVER allow 3+ sentences of similar length.
+Word choice: prefer the word a specific researcher would actually reach for over the "safest" academic synonym. Vary your transitions naturally — don't lean on the same connector twice in a row, but also don't force an unusual one just to be unusual.
 
-2. PERPLEXITY — use unexpected academic word choices:
-- Instead of "demonstrate" → "show" or "reveal" or "confirm"
-- Instead of "utilize" → "use" or "apply" or "employ"
-- Instead of "significant" → "notable" or "marked" or "considerable"
-- Instead of "it has been shown that" → "research confirms" or "studies show" or "evidence points to"
-- Instead of "in conclusion" → "taken together" or "overall" or "in sum"
-- Instead of "furthermore" → "beyond this" or "building on this" or "relatedly"
-- Instead of "consequently" → "as a result" or "this led to" or "because of this"
+Voice and structure:
+- Active voice reads more like a person taking ownership of a claim; passive isn't forbidden, just don't default to it.
+- Avoid the most overused AI stock phrases (furthermore, moreover, it is important to note, plays a crucial role, delve into, tapestry, testament to) — not because they're banned outright, but because a real writer would rarely reach for more than one of them in a whole piece.
 
-3. ACTIVE VOICE — passive voice = low perplexity score:
-- "it was found that X" → "the study found X"
-- "it is believed that" → "scholars argue" or "researchers suggest"
-- "it has been shown" → "evidence shows" or "data confirm"
-
-STRICT RULES:
-- No contractions (formal register)
-- NEVER alter, round, or rephrase any number, percentage, date, statistic, or citation — copy every digit and figure exactly as given in the source text
-- No em-dashes or en-dashes
-- No AI buzzwords: furthermore, moreover, additionally, consequently, utilize, facilitate, demonstrate, individuals, paradigm, robust, leverage, delve, nuanced, tapestry, testament, pivotal
-- Output ONLY the rewritten text`;
+Non-negotiable: never alter, round, or rephrase any number, percentage, date, statistic, or citation — copy every digit and figure exactly as given. No contractions (formal register). Output ONLY the rewritten text, nothing else.`;
 
       userPrompt = [
-        "Rewrite this academic text to score below 20% on Turnitin and GPTZero AI detectors.",
-        "",
-        "MANDATORY burstiness pattern (count words per sentence):",
-        "- Every paragraph must have: 1 short sentence (6-10 words) + 1-2 medium sentences + 1 long sentence (24-35 words)",
-        "- If you find 3 consecutive sentences between 15-22 words, you MUST break the pattern",
-        "",
-        "MANDATORY perplexity boosters:",
-        "- Replace every instance of: furthermore, moreover, consequently, utilize, demonstrate, individuals, it has been shown, it is believed, it was found",
-        "- Convert at least 2 passive voice constructions to active voice per paragraph",
-        "- Use at least 1 unexpected transition per paragraph (not: therefore, thus, hence)",
-        "",
-        "Keep all citations, data, and arguments exactly accurate.",
-        "No contractions. Formal register only.",
-        "Output ONLY the rewritten text.",
+        "Rewrite this academic passage in an authentic human academic voice — not a formula.",
+        "Let sentence rhythm follow the ideas rather than hitting a fixed length pattern; some claims deserve one short sentence, some reasoning needs room to unfold across a longer one.",
+        "Use precise, natural word choices a specific researcher would pick, and don't over-rely on stock academic transitions.",
+        "Keep every citation, number, date, and statistic exactly as given — no rounding, no rephrasing of figures.",
+        "No contractions. Formal register. Output only the rewritten text.",
         "",
         "Text:",
         text
       ].join("\n");
     } else {
-      systemInstruction = `You are a human editor rewriting AI text to sound like a real person wrote it.
+      systemInstruction = `You are a specific human writer — with your own voice, habits, and quirks — rewriting AI-drafted text so it reads like something you actually wrote, not like a template being filled in.
 
-YOUR ONLY JOB: Make the text score below 20% on AI detectors. You do this by attacking the three things detectors measure: perplexity, burstiness, and token probability.
+Real human writing has uneven rhythm because a real person's thinking is uneven — not because every paragraph follows a short/medium/long formula. Let sentence length follow what you're actually saying: a flat statement can be short, an idea with some nuance can run longer and wind through a clause or two. Don't force a pattern; just don't let every sentence land at the same length either.
 
-BURSTINESS RULES (most important):
-- Count the words in each sentence. If 3 or more consecutive sentences are between 12-22 words, you MUST break this pattern.
-- After every 2-3 medium sentences, add either: one very short sentence (3-6 words) OR one long sentence (25-35 words).
-- Example bad (AI): "Technology has changed how we work. It affects many aspects of daily life. People use it every day."
-- Example good (human): "Technology changed everything. It now affects how we work, how we learn, how we communicate, and even how we rest at night. Crazy, right?"
+Word choice: reach for the word you'd actually use, not the safest or most "impressive" synonym. A few of the most overused AI stock phrases — furthermore, moreover, it is important to note, plays a crucial role, delve into, tapestry, testament — are worth avoiding, but this isn't a banned-word checklist to mechanically scrub; a real person just rarely reaches for more than one of them anyway.
 
-PERPLEXITY RULES (second most important):
-- Replace predictable word choices with unexpected ones.
-- Instead of "significant" use "real" or "actual" or "pretty big"
-- Instead of "demonstrate" use "show" or "prove"  
-- Instead of "obtain" use "get"
-- Instead of "sufficient" use "enough"
-- Add one unexpected word or phrase per paragraph that a detector would not predict.
+Voice signals that read as human: natural contractions where they fit your tone, the occasional sentence that starts with "And" or "But" if it flows, a stray aside if it genuinely fits (not one bolted onto every paragraph). Use these where they feel earned, not as a quota to hit.
 
-TOKEN PROBABILITY RULES:
-- Use contractions: don't, it's, can't, won't, they're, you'll
-- Start 1-2 sentences with "And" or "But" — humans do this, AI avoids it
-- Add one casual aside per paragraph like "honestly", "actually", "in practice", or "to be fair"
-- Use simple words over complex ones everywhere possible
-
-BANNED WORDS (zero tolerance): furthermore, moreover, additionally, consequently, nevertheless, subsequently, utilize, facilitate, demonstrate, individuals, optimal, paradigm, robust, leverage, delve, nuanced, seamless, cutting-edge, tapestry, testament, beacon, pivotal, underscore, showcase, garner, fostering, vibrant, intricate
-
-FACTS ARE OFF LIMITS: Never alter, round, or rephrase any number, percentage, date, statistic, name, or citation. Copy every digit and figure exactly as given — style changes are fine, factual changes are not.
+FACTS ARE OFF LIMITS: never alter, round, or rephrase any number, percentage, date, statistic, or name. Copy every digit and figure exactly as given — style changes are fine, factual changes are not.
 
 TONE: ${toneDesc}
 OUTPUT: Rewritten text only. No intro. No explanation.`;
 
       userPrompt = [
-        "Rewrite this text so it scores below 20% on AI detectors.",
-        "",
-        "MANDATORY sentence length pattern — count words carefully:",
-        "- Short sentence (3-6 words): at least 2 per paragraph",  
-        "- Medium sentence (12-20 words): 2-3 per paragraph",
-        "- Long sentence (22-35 words): at least 1 per paragraph",
-        "- NEVER have 3+ sentences of similar length in a row",
-        "",
-        "MANDATORY human signals:",
-        "- Use contractions: don't, it's, can't, won't",
-        "- Start at least 1 sentence with 'And' or 'But'",
-        "- Add 1 casual word per paragraph: honestly / actually / really / in practice",
-        "- Use simple vocabulary — if a simpler word exists, use it",
-        "",
-        "ZERO TOLERANCE banned words: furthermore, moreover, additionally, consequently, utilize, facilitate, demonstrate, individuals, optimal, paradigm, robust, leverage, delve, nuanced, seamless, tapestry, testament, pivotal",
+        "Rewrite this text in a natural, authentic human voice — vary sentence rhythm because the ideas call for it, not by hitting a length quota.",
+        "Use word choices a real person would actually reach for, and avoid leaning on the most overused AI stock phrases (furthermore, moreover, utilize, delve, tapestry, testament, and similar).",
+        "Let contractions and casual asides show up where they genuinely fit your tone, not forced into every paragraph.",
+        "Keep every number, date, name, and statistic exactly as given.",
         "",
         "Text:",
         text
       ].join("\n");
     }
 
-    const rawText = await generateWithRetries(systemInstruction, userPrompt, 1.25);
-
     const originalNumbers = extractNumbers(text);
 
-    const raw = stripAiFormatting(rawText);
-    let humanised = postProcess(raw, isAcademic);
+    // ── Two independent candidates on the first pass ──
+    // Rather than committing to one linear rewrite, generate two independent
+    // drafts at slightly different temperatures and keep whichever scores
+    // lower against the authoritative detector (falling back to the first
+    // if scoring fails). This gives the model room to land on a genuinely
+    // different phrasing rather than mechanically patching one draft.
+    const [rawA, rawB] = await Promise.all([
+      generateWithRetries(systemInstruction, userPrompt, 1.15),
+      generateWithRetries(systemInstruction, userPrompt, 1.35),
+    ]);
+    const candidateA = postProcess(stripAiFormatting(rawA), isAcademic);
+    const candidateB = postProcess(stripAiFormatting(rawB), isAcademic);
+
+    let humanised = candidateA;
     let passesUsed = 1;
+    try {
+      const [scoreA, scoreB] = await Promise.all([
+        getAuthoritativeScore(candidateA),
+        getAuthoritativeScore(candidateB),
+      ]);
+      humanised = scoreB.score < scoreA.score ? candidateB : candidateA;
+    } catch (e) {
+      console.warn("Candidate comparison failed, keeping first draft:", e.message);
+    }
 
     // ── Multi-pass adversarial loop ──
     // Iteratively rewrites against the AUTHORITATIVE score (ZeroGPT when
@@ -811,7 +745,7 @@ OUTPUT: Rewritten text only. No intro. No explanation.`;
         const breakdown = heuristicDetect(bestText).breakdown; // targeted fix instructions, not the score itself
         const problems = [];
         if (breakdown.burstiness.aiSignal > 40) {
-          problems.push("- Sentence lengths are still too uniform (low burstiness). Mix very short punchy sentences (4-8 words) with long, complex ones (25-35 words with subordinate clauses). Never let 3 sentences in a row land within 5 words of each other in length.");
+          problems.push("- Sentence lengths are still too uniform (low burstiness). Let some sentences run short and blunt and others longer and more layered, following what each idea actually needs — don't hit a fixed word-count pattern, just avoid several sentences in a row landing at a similar length.");
         }
         if (breakdown.vocabularyDiversity.aiSignal > 40) {
           problems.push("- Vocabulary is too predictable (low perplexity). Replace common, high-probability word choices with less expected but natural synonyms, idioms, and phrasing a specific person would actually use.");
