@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import api from "../../lib/api";
 
-
 function planLimitFallback(plan) {
   const p = (plan || "FREE").toUpperCase();
   if (p === "UNLIMITED") return 150;
@@ -14,7 +13,9 @@ function planLimitFallback(plan) {
 }
 
 function makeTitle(input) {
-  const t = String(input || "").trim().replace(/\s+/g, " ");
+  const t = String(input || "")
+    .trim()
+    .replace(/\s+/g, " ");
   if (!t) return "Untitled";
   return t.length > 42 ? t.slice(0, 42) + "…" : t;
 }
@@ -47,22 +48,38 @@ function CopyButton({ text }) {
   return (
     <button
       style={{
-        padding: "4px 12px", borderRadius: 8,
-        border: copied ? "1px solid rgba(125,239,160,0.4)" : "1px solid rgba(255,255,255,0.12)",
-        background: copied ? "rgba(125,239,160,0.12)" : "rgba(255,255,255,0.06)",
+        padding: "4px 12px",
+        borderRadius: 8,
+        border: copied
+          ? "1px solid rgba(125,239,160,0.4)"
+          : "1px solid rgba(255,255,255,0.12)",
+        background: copied
+          ? "rgba(125,239,160,0.12)"
+          : "rgba(255,255,255,0.06)",
         color: copied ? "#7defa0" : "rgba(255,255,255,0.8)",
-        fontSize: 12, cursor: "pointer", fontWeight: 700,
-        transition: "all 0.2s", minWidth: 58,
+        fontSize: 12,
+        cursor: "pointer",
+        fontWeight: 700,
+        transition: "all 0.2s",
+        minWidth: 58,
       }}
       onClick={() => {
-        if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text)
+        if (
+          typeof navigator !== "undefined" &&
+          navigator.clipboard &&
+          navigator.clipboard.writeText
+        ) {
+          navigator.clipboard
+            .writeText(text)
             .then(() => {
               setCopied(true);
               setTimeout(() => setCopied(false), 2000);
             })
             .catch((err) => {
-              console.error("Failed to copy text using navigator.clipboard: ", err);
+              console.error(
+                "Failed to copy text using navigator.clipboard: ",
+                err,
+              );
             });
         } else {
           // Fallback to older document.execCommand for insecure (HTTP) contexts
@@ -106,7 +123,17 @@ function CopyButton({ text }) {
 // Runs automatically whenever a fresh humanised result comes in (Pro/Unlimited only).
 // High-AI sentences get a red highlight, borderline ones amber, clean ones no highlight.
 // Clicking any sentence rewrites it in place and re-scores.
-function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, router, autoToken, isGuest, guestId }) {
+function AiHighlightPanel({
+  humanText,
+  setHumanText,
+  canUse,
+  canRewrite,
+  mode,
+  router,
+  autoToken,
+  isGuest,
+  guestId,
+}) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [overallScore, setOverallScore] = useState(null);
@@ -124,7 +151,8 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
     try {
       // Guests have no JWT, so send their guestId so the backend can verify
       // they've used at least one trial (see canUseDetectionGate server-side).
-      const config = isGuest && guestId ? { headers: { "x-guest-id": guestId } } : undefined;
+      const config =
+        isGuest && guestId ? { headers: { "x-guest-id": guestId } } : undefined;
       const [overallRes, sentRes] = await Promise.all([
         api.post("/detect-score", { text }, config),
         api.post("/detect-score-sentences", { text }, config),
@@ -138,7 +166,11 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
     } catch (e) {
       if (myRequestId !== requestIdRef.current) return;
       const status = e?.response?.status;
-      setErr(status === 403 ? "AI scoring is a Pro/Unlimited feature." : (e?.response?.data?.message || "Could not score this text."));
+      setErr(
+        status === 403
+          ? "AI scoring is a Pro/Unlimited feature."
+          : e?.response?.data?.message || "Could not score this text.",
+      );
     } finally {
       if (myRequestId === requestIdRef.current) setLoading(false);
     }
@@ -154,17 +186,25 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
 
   async function rewriteAt(idx) {
     if (!canRewrite) {
-      setErr("Click-to-rewrite is a Pro/Unlimited feature. AI detection scoring is included in your Basic plan.");
+      setErr(
+        "Click-to-rewrite is a Pro/Unlimited feature. AI detection scoring is included in your Basic plan.",
+      );
       return;
     }
     setErr("");
-    const items = sentenceScores.length ? sentenceScores.map(x => x.sentence) : splitIntoSentences(humanText);
+    const items = sentenceScores.length
+      ? sentenceScores.map((x) => x.sentence)
+      : splitIntoSentences(humanText);
     const target = items[idx];
     if (!target) return;
     setRewritingIdx(idx);
     try {
       const context = items.slice(Math.max(0, idx - 1), idx + 2).join(" ");
-      const res = await api.post("/rewrite-sentence", { sentence: target, context, mode });
+      const res = await api.post("/rewrite-sentence", {
+        sentence: target,
+        context,
+        mode,
+      });
       const rewritten = res.data?.rewritten;
       if (rewritten) {
         const next = items.slice();
@@ -176,7 +216,11 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
       }
     } catch (e) {
       const status = e?.response?.status;
-      setErr(status === 403 ? "Sentence rewriting is a Pro/Unlimited feature." : (e?.response?.data?.message || "Rewrite failed."));
+      setErr(
+        status === 403
+          ? "Sentence rewriting is a Pro/Unlimited feature."
+          : e?.response?.data?.message || "Rewrite failed.",
+      );
     } finally {
       setRewritingIdx(null);
     }
@@ -188,17 +232,24 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
     return (
       <div className="analysisCard">
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
-          Basic, Pro, and Unlimited plans auto-score this output and highlight the sentences that still read as AI.
+          Basic, Pro, and Unlimited plans auto-score this output and highlight
+          the sentences that still read as AI.
         </span>
-        <button className="btnSmall" onClick={() => router.push("/pricing")}>🔒 Upgrade</button>
+        <button className="btnSmall" onClick={() => router.push("/pricing")}>
+          🔒 Upgrade
+        </button>
       </div>
     );
   }
 
   const overallColor =
-    overallScore === null ? "rgba(255,255,255,0.6)" :
-      overallScore >= 70 ? "#ff8a80" :
-        overallScore >= 35 ? "#ffd166" : "#7defa0";
+    overallScore === null
+      ? "rgba(255,255,255,0.6)"
+      : overallScore >= 70
+        ? "#ff8a80"
+        : overallScore >= 35
+          ? "#ffd166"
+          : "#7defa0";
 
   // Use scored sentences if available, otherwise plain split (before first score comes back).
   const displaySentences = sentenceScores.length
@@ -215,15 +266,32 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
             <span className="analysisMuted">Scanning…</span>
           ) : overallScore !== null && reliable ? (
             <>
-              <span className="analysisBigScore" style={{ color: overallColor }}>{overallScore}%</span>
-              <span className="analysisMuted">AI likelihood — {overallLabel}</span>
-              <span className="analysisDisclaimer">Directional estimate, not proof of authorship</span>
+              <span
+                className="analysisBigScore"
+                style={{ color: overallColor }}
+              >
+                {overallScore}%
+              </span>
+              <span className="analysisMuted">
+                AI likelihood — {overallLabel}
+              </span>
+              <span className="analysisDisclaimer">
+                Directional estimate, not proof of authorship
+              </span>
             </>
           ) : !reliable ? (
-            <span className="analysisMuted">Not enough text for a reliable estimate — add more content and recheck</span>
+            <span className="analysisMuted">
+              Not enough text for a reliable estimate — add more content and
+              recheck
+            </span>
           ) : null}
         </div>
-        <button className="btnSmall" onClick={() => runDetection(humanText)} disabled={loading} style={{ opacity: loading ? 0.6 : 1 }}>
+        <button
+          className="btnSmall"
+          onClick={() => runDetection(humanText)}
+          disabled={loading}
+          style={{ opacity: loading ? 0.6 : 1 }}
+        >
           {loading ? "Scanning…" : "Recheck"}
         </button>
       </div>
@@ -249,19 +317,29 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
             <span
               key={idx}
               onClick={() => rewritingIdx === null && rewriteAt(idx)}
-              title={score !== null ? `${score}% AI-likely — click to rewrite` : "Click to rewrite this sentence"}
+              title={
+                score !== null
+                  ? `${score}% AI-likely — click to rewrite`
+                  : "Click to rewrite this sentence"
+              }
               style={{
                 cursor: rewritingIdx === null ? "pointer" : "default",
                 padding: "1px 3px",
                 borderRadius: 5,
                 marginRight: 4,
                 background: rewritingIdx === idx ? "rgba(139,120,255,0.3)" : bg,
-                opacity: rewritingIdx !== null && rewritingIdx !== idx ? 0.5 : 1,
+                opacity:
+                  rewritingIdx !== null && rewritingIdx !== idx ? 0.5 : 1,
                 borderBottom: underline,
                 transition: "background 0.15s",
               }}
-              onMouseEnter={(e) => { if (rewritingIdx === null && !isHigh && !isMid) e.currentTarget.style.background = "rgba(139,120,255,0.14)"; }}
-              onMouseLeave={(e) => { if (rewritingIdx !== idx) e.currentTarget.style.background = bg; }}
+              onMouseEnter={(e) => {
+                if (rewritingIdx === null && !isHigh && !isMid)
+                  e.currentTarget.style.background = "rgba(139,120,255,0.14)";
+              }}
+              onMouseLeave={(e) => {
+                if (rewritingIdx !== idx) e.currentTarget.style.background = bg;
+              }}
             >
               {rewritingIdx === idx ? "Rewriting…" : s}{" "}
             </span>
@@ -270,12 +348,36 @@ function AiHighlightPanel({ humanText, setHumanText, canUse, canRewrite, mode, r
       </div>
 
       <div className="legendRow">
-        <span><span className="legendDot" style={{ background: "rgba(255,90,90,0.5)" }} />High AI — click to rewrite</span>
-        <span><span className="legendDot" style={{ background: "rgba(255,209,102,0.4)" }} />Mixed</span>
-        <span><span className="legendDot" style={{ background: "rgba(255,255,255,0.1)" }} />Human-like</span>
+        <span>
+          <span
+            className="legendDot"
+            style={{ background: "rgba(255,90,90,0.5)" }}
+          />
+          High AI — click to rewrite
+        </span>
+        <span>
+          <span
+            className="legendDot"
+            style={{ background: "rgba(255,209,102,0.4)" }}
+          />
+          Mixed
+        </span>
+        <span>
+          <span
+            className="legendDot"
+            style={{ background: "rgba(255,255,255,0.1)" }}
+          />
+          Human-like
+        </span>
       </div>
 
-      {err && <div style={{ marginTop: 8, fontSize: 12, color: "rgba(255,150,150,0.9)" }}>{err}</div>}
+      {err && (
+        <div
+          style={{ marginTop: 8, fontSize: 12, color: "rgba(255,150,150,0.9)" }}
+        >
+          {err}
+        </div>
+      )}
     </div>
   );
 }
@@ -333,17 +435,17 @@ function DashboardContent() {
 
   const remaining = useMemo(
     () => Math.max(0, (limitToday || 0) - (usedToday || 0)),
-    [limitToday, usedToday]
+    [limitToday, usedToday],
   );
 
   // Word counts
   const wordCount = useMemo(
     () => (aiText.trim() ? aiText.trim().split(/\s+/).length : 0),
-    [aiText]
+    [aiText],
   );
   const outputWordCount = useMemo(
     () => (humanText.trim() ? humanText.trim().split(/\s+/).length : 0),
-    [humanText]
+    [humanText],
   );
 
   // Word limit per plan — unlimited plan has no cap (use 999999 as sentinel)
@@ -389,8 +491,12 @@ function DashboardContent() {
     el.style.height = Math.min(el.scrollHeight, max) + "px";
   }
 
-  useEffect(() => { autoGrow(aiTextareaRef); }, [aiText]);
-  useEffect(() => { autoGrow(humanTextareaRef); }, [humanText]);
+  useEffect(() => {
+    autoGrow(aiTextareaRef);
+  }, [aiText]);
+  useEffect(() => {
+    autoGrow(humanTextareaRef);
+  }, [humanText]);
 
   function showToast(msg) {
     setToast(msg);
@@ -416,9 +522,10 @@ function DashboardContent() {
       // reuse) a guestId so the backend can track the 5-try trial.
       let gid = localStorage.getItem("guestId");
       if (!gid) {
-        gid = (typeof crypto !== "undefined" && crypto.randomUUID)
-          ? crypto.randomUUID()
-          : `guest_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        gid =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `guest_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         localStorage.setItem("guestId", gid);
       }
       setGuestId(gid);
@@ -434,7 +541,8 @@ function DashboardContent() {
 
     if (payment === "success" && sessionId) {
       // Call backend to confirm and upgrade plan from Stripe session
-      api.post("/confirm-payment", { sessionId })
+      api
+        .post("/confirm-payment", { sessionId })
         .then((res) => {
           const upgradedPlan = res.data?.plan?.toUpperCase() || "PRO";
           setPlan(upgradedPlan);
@@ -474,7 +582,10 @@ function DashboardContent() {
         sessionStorage.removeItem("loadFromHistory");
 
         setTimeout(() => {
-          editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          editorRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
         }, 50);
         showToast("Loaded from history");
       } catch {
@@ -502,13 +613,15 @@ function DashboardContent() {
             name: u.name,
             email: u.email,
             plan: u.plan,
-          })
+          }),
         );
       }
     } catch {
       try {
         const storedUser = JSON.parse(localStorage.getItem("user") || "null");
-        const p = storedUser?.plan ? String(storedUser.plan).toUpperCase() : "FREE";
+        const p = storedUser?.plan
+          ? String(storedUser.plan).toUpperCase()
+          : "FREE";
         setPlan(p);
         setLimitToday(planLimitFallback(p));
       } catch {
@@ -563,7 +676,9 @@ function DashboardContent() {
 
     if (isGuest) {
       if (guestUsed >= GUEST_TRY_LIMIT) {
-        setError("You've used all 5 free tries. Create a free account to keep going.");
+        setError(
+          "You've used all 5 free tries. Create a free account to keep going.",
+        );
         return;
       }
     } else if (usedToday >= limitToday) {
@@ -576,7 +691,11 @@ function DashboardContent() {
     setFactCheck(null);
     try {
       const res = isGuest
-        ? await api.post("/guest/humanise", { text: t, mode }, { headers: { "x-guest-id": guestId } })
+        ? await api.post(
+            "/guest/humanise",
+            { text: t, mode },
+            { headers: { "x-guest-id": guestId } },
+          )
         : await api.post("/humanise", { text: t, mode });
 
       const out =
@@ -597,7 +716,11 @@ function DashboardContent() {
         setGuestUsed(used);
         localStorage.setItem("guestUsed", String(used));
         const left = Math.max(0, GUEST_TRY_LIMIT - used);
-        showToast(left > 0 ? `✓ Humanised! ${left} free ${left === 1 ? "try" : "tries"} left.` : "✓ That was your last free try.");
+        showToast(
+          left > 0
+            ? `✓ Humanised! ${left} free ${left === 1 ? "try" : "tries"} left.`
+            : "✓ That was your last free try.",
+        );
       } else {
         // ✅ FIX 1: backend sends usage.used / usage.limit (not usedToday/limitToday)
         if (res.data?.usage) {
@@ -634,8 +757,15 @@ function DashboardContent() {
 
     if (!file) return;
 
-    const allowed = ["text/plain", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
-    if (!allowed.includes(file.type) && !file.name.match(/\.(txt|pdf|docx)$/i)) {
+    const allowed = [
+      "text/plain",
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+    if (
+      !allowed.includes(file.type) &&
+      !file.name.match(/\.(txt|pdf|docx)$/i)
+    ) {
       setUploadError("Only .txt, .pdf, or .docx files are supported.");
       return;
     }
@@ -712,10 +842,13 @@ function DashboardContent() {
   }
 
   // FEATURE 3: derive the active progress step + percent from elapsed/estimatedTotal
-  const progressFraction = Math.min(0.99, elapsed / Math.max(1, estimatedTotal));
+  const progressFraction = Math.min(
+    0.99,
+    elapsed / Math.max(1, estimatedTotal),
+  );
   const activeStepIdx = PROGRESS_STEPS.reduce(
     (acc, step, idx) => (progressFraction >= step.at ? idx : acc),
-    0
+    0,
   );
   const remainingSeconds = Math.max(0, estimatedTotal - elapsed);
 
@@ -736,7 +869,8 @@ function DashboardContent() {
         }
         body {
           margin: 0;
-          background: radial-gradient(
+          background:
+            radial-gradient(
               1200px 700px at 55% 20%,
               rgba(139, 120, 255, 0.25),
               transparent 60%
@@ -788,7 +922,10 @@ function DashboardContent() {
           box-shadow: 0 30px 70px rgba(0, 0, 0, 0.25);
           overflow: hidden;
           flex-shrink: 0;
-          transition: width 0.25s ease, min-width 0.25s ease, flex 0.25s ease;
+          transition:
+            width 0.25s ease,
+            min-width 0.25s ease,
+            flex 0.25s ease;
           will-change: width;
         }
         .historySidebar.open {
@@ -878,7 +1015,9 @@ function DashboardContent() {
           padding: 10px 10px;
           cursor: pointer;
           position: relative;
-          transition: transform 0.12s ease, border-color 0.12s ease;
+          transition:
+            transform 0.12s ease,
+            border-color 0.12s ease;
         }
         .histItem:hover {
           border-color: rgba(255, 255, 255, 0.18);
@@ -1091,7 +1230,11 @@ function DashboardContent() {
         .progressBarFill {
           height: 100%;
           border-radius: 999px;
-          background: linear-gradient(90deg, rgba(139, 120, 255, 0.9), rgba(109, 93, 255, 0.9));
+          background: linear-gradient(
+            90deg,
+            rgba(139, 120, 255, 0.9),
+            rgba(109, 93, 255, 0.9)
+          );
           transition: width 0.4s ease;
         }
         .progressPercent {
@@ -1230,31 +1373,58 @@ function DashboardContent() {
           }}
         >
           {/* LEFT: brand + links */}
-          <div style={{ display: "flex", alignItems: "center", gap: 16, minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              minWidth: 0,
+            }}
+          >
             <div
               style={{
                 width: 34,
                 height: 34,
                 borderRadius: 12,
-                background: "linear-gradient(135deg, rgba(139,120,255,0.9), rgba(109,93,255,0.9))",
+                background:
+                  "linear-gradient(135deg, rgba(139,120,255,0.9), rgba(109,93,255,0.9))",
                 display: "grid",
                 placeItems: "center",
                 boxShadow: "0 10px 30px rgba(139,120,255,0.25)",
-                fontWeight: 900,
                 flex: "0 0 auto",
+                overflow: "hidden",
               }}
               aria-label="AI Humaniser"
               title="AI Humaniser"
             >
-              ✦
+              <img
+                src="/logo.png"
+                alt="AI Humaniser"
+                style={{ width: "80%", height: "80%", objectFit: "contain" }}
+              />
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                lineHeight: 1.1,
+              }}
+            >
               <span style={{ fontWeight: 900 }}>AI Humaniser</span>
-              <span style={{ fontSize: 12, color: "var(--muted2)" }}>Dashboard</span>
+              <span style={{ fontSize: 12, color: "var(--muted2)" }}>
+                Dashboard
+              </span>
             </div>
 
-            <div style={{ display: "flex", gap: 14, marginLeft: 14, color: "var(--muted)" }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 14,
+                marginLeft: 14,
+                color: "var(--muted)",
+              }}
+            >
               <a href="/dashboard" style={{ opacity: 0.95 }}>
                 Dashboard
               </a>
@@ -1270,16 +1440,25 @@ function DashboardContent() {
               style={{
                 padding: "8px 12px",
                 borderRadius: 999,
-                background: isGuest ? "rgba(255,209,102,0.12)" : "rgba(139,120,255,0.12)",
+                background: isGuest
+                  ? "rgba(255,209,102,0.12)"
+                  : "rgba(139,120,255,0.12)",
                 border: `1px solid ${isGuest ? "rgba(255,209,102,0.28)" : "rgba(139,120,255,0.25)"}`,
                 color: "rgba(255,255,255,0.9)",
                 fontSize: 13,
                 whiteSpace: "nowrap",
               }}
             >
-              {isGuest
-                ? <>Free trial: <b>{guestUsed}</b> / {GUEST_TRY_LIMIT} tries used</>
-                : <>Plan: <b>{plan}</b> • Used today: <b>{usedToday}</b> / {limitToday}</>}
+              {isGuest ? (
+                <>
+                  Free trial: <b>{guestUsed}</b> / {GUEST_TRY_LIMIT} tries used
+                </>
+              ) : (
+                <>
+                  Plan: <b>{plan}</b> • Used today: <b>{usedToday}</b> /{" "}
+                  {limitToday}
+                </>
+              )}
             </div>
 
             {isGuest ? (
@@ -1303,7 +1482,8 @@ function DashboardContent() {
                     padding: "9px 14px",
                     borderRadius: 12,
                     border: "1px solid rgba(139,120,255,0.25)",
-                    background: "linear-gradient(135deg, rgba(139,120,255,0.9), rgba(109,93,255,0.9))",
+                    background:
+                      "linear-gradient(135deg, rgba(139,120,255,0.9), rgba(109,93,255,0.9))",
                     color: "rgba(255,255,255,0.95)",
                     cursor: "pointer",
                     fontWeight: 700,
@@ -1351,12 +1531,13 @@ function DashboardContent() {
       <div className="pageWrap">
         <div className="dashShell">
           {/* Sidebar */}
-          <aside className={`historySidebar ${historyOpen ? "open" : "closed"}`}>
+          <aside
+            className={`historySidebar ${historyOpen ? "open" : "closed"}`}
+          >
             <div className="historyHeader">
               {historyOpen && <div className="historyTitle">History</div>}
 
               <div className="historyHeaderRight">
-
                 <button
                   className="btnSmall"
                   onClick={() => setHistoryOpen((v) => !v)}
@@ -1389,14 +1570,28 @@ function DashboardContent() {
                     }}
                   >
                     Your history isn't saved as a guest.{" "}
-                    <a href="/register" style={{ color: "#ffd166", fontWeight: 700 }}>Create a free account</a> to keep every humanised result.
+                    <a
+                      href="/register"
+                      style={{ color: "#ffd166", fontWeight: 700 }}
+                    >
+                      Create a free account
+                    </a>{" "}
+                    to keep every humanised result.
                   </div>
                 )
               ) : (
                 <>
                   {historyOpen ? (
-                    <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 10 }}>
-                      {loadingHistory ? "Loading..." : `${history.length} item${history.length === 1 ? "" : "s"}`}
+                    <div
+                      style={{
+                        color: "var(--muted)",
+                        fontSize: 13,
+                        marginBottom: 10,
+                      }}
+                    >
+                      {loadingHistory
+                        ? "Loading..."
+                        : `${history.length} item${history.length === 1 ? "" : "s"}`}
                     </div>
                   ) : null}
 
@@ -1418,13 +1613,14 @@ function DashboardContent() {
                   <div style={{ display: "grid", gap: 10 }}>
                     {history.map((item) => {
                       const id = item._id || item.id;
-                      const createdAt = item.createdAt || item.timestamp || item.date;
-                      const input = item.input || item.aiText || item.text || "";
+                      const createdAt =
+                        item.createdAt || item.timestamp || item.date;
+                      const input =
+                        item.input || item.aiText || item.text || "";
                       const title = makeTitle(input);
 
                       return (
                         <div
-
                           key={id}
                           className={`histItem ${"" /* dashboard has no "active" */}`}
                           onClick={() => openHistoryItem(id)}
@@ -1433,13 +1629,19 @@ function DashboardContent() {
                             <>
                               <div className="histTitle">{title}</div>
                               <div className="histMeta">
-                                <span>{createdAt ? new Date(createdAt).toLocaleString() : ""}</span>
+                                <span>
+                                  {createdAt
+                                    ? new Date(createdAt).toLocaleString()
+                                    : ""}
+                                </span>
 
                                 <button
                                   className="dotsBtn"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setMenuOpenId((prev) => (prev === id ? null : id));
+                                    setMenuOpenId((prev) =>
+                                      prev === id ? null : id,
+                                    );
                                   }}
                                   aria-label="More"
                                   title="More"
@@ -1455,8 +1657,13 @@ function DashboardContent() {
                                     e.stopPropagation();
                                   }}
                                 >
-                                  <button onClick={() => openHistoryItem(id)}>Open</button>
-                                  <button className="danger" onClick={() => deleteHistoryItem(id)}>
+                                  <button onClick={() => openHistoryItem(id)}>
+                                    Open
+                                  </button>
+                                  <button
+                                    className="danger"
+                                    onClick={() => deleteHistoryItem(id)}
+                                  >
                                     Delete
                                   </button>
                                 </div>
@@ -1474,39 +1681,76 @@ function DashboardContent() {
 
           {/* Main */}
           <main className="dashMain">
-
-
-
             <div className="editorCard" ref={editorRef} style={{ flex: 1 }}>
               <div className="twoCols">
                 {/* ── Input pane ── */}
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div className="label" style={{ marginBottom: 0 }}>AI Content</div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 8,
+                    }}
+                  >
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
+                      <div className="label" style={{ marginBottom: 0 }}>
+                        AI Content
+                      </div>
                       {/* Mode selector */}
                       <select
                         value={mode}
                         onChange={(e) => setMode(e.target.value)}
                         style={{
-                          padding: "4px 10px", borderRadius: 8,
+                          padding: "4px 10px",
+                          borderRadius: 8,
                           border: "1px solid rgba(139,120,255,0.3)",
                           background: "#0f1224",
                           color: "rgba(255,255,255,0.9)",
-                          fontSize: 12, cursor: "pointer",
+                          fontSize: 12,
+                          cursor: "pointer",
                           outline: "none",
                           appearance: "auto",
                           WebkitAppearance: "auto",
                         }}
                       >
-                        <option value="standard" style={{ background: "#0f1224", color: "#fff" }}>Standard</option>
-                        <option value="professional" style={{ background: "#0f1224", color: "#fff" }}>Professional ✦</option>
-                        <option value="academic" style={{ background: "#0f1224", color: "#fff" }}>Academic</option>
-                        <option value="creative" style={{ background: "#0f1224", color: "#fff" }}>Creative</option>
-                        <option value="casual" style={{ background: "#0f1224", color: "#fff" }}>Casual</option>
+                        <option
+                          value="standard"
+                          style={{ background: "#0f1224", color: "#fff" }}
+                        >
+                          Standard
+                        </option>
+                        <option
+                          value="professional"
+                          style={{ background: "#0f1224", color: "#fff" }}
+                        >
+                          Professional ✦
+                        </option>
+                        <option
+                          value="academic"
+                          style={{ background: "#0f1224", color: "#fff" }}
+                        >
+                          Academic
+                        </option>
+                        <option
+                          value="creative"
+                          style={{ background: "#0f1224", color: "#fff" }}
+                        >
+                          Creative
+                        </option>
+                        <option
+                          value="casual"
+                          style={{ background: "#0f1224", color: "#fff" }}
+                        >
+                          Casual
+                        </option>
                       </select>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
                       {/* Clear input button — only shows once there's something to clear */}
                       {aiText && (
                         <button
@@ -1535,16 +1779,24 @@ function DashboardContent() {
                       )}
 
                       {/* Word count badge */}
-                      <span style={{
-                        fontSize: 12,
-                        color: wordCount > wordLimit ? "rgba(255,120,80,0.95)" : "var(--muted)",
-                        background: wordCount > wordLimit ? "rgba(255,120,80,0.1)" : "rgba(255,255,255,0.06)",
-                        border: `1px solid ${wordCount > wordLimit ? "rgba(255,120,80,0.28)" : "rgba(255,255,255,0.1)"}`,
-                        borderRadius: 8,
-                        padding: "3px 9px",
-                        fontWeight: 600,
-                        transition: "all 0.2s",
-                      }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color:
+                            wordCount > wordLimit
+                              ? "rgba(255,120,80,0.95)"
+                              : "var(--muted)",
+                          background:
+                            wordCount > wordLimit
+                              ? "rgba(255,120,80,0.1)"
+                              : "rgba(255,255,255,0.06)",
+                          border: `1px solid ${wordCount > wordLimit ? "rgba(255,120,80,0.28)" : "rgba(255,255,255,0.1)"}`,
+                          borderRadius: 8,
+                          padding: "3px 9px",
+                          fontWeight: 600,
+                          transition: "all 0.2s",
+                        }}
+                      >
                         {wordCount.toLocaleString()} / {wordLimitDisplay} words
                       </span>
 
@@ -1615,29 +1867,54 @@ function DashboardContent() {
 
                   {/* Upload error */}
                   {uploadError && (
-                    <div style={{
-                      marginTop: 6, padding: "7px 10px", borderRadius: 8,
-                      background: "rgba(255,120,80,0.1)", border: "1px solid rgba(255,120,80,0.22)",
-                      color: "rgba(255,200,180,0.95)", fontSize: 12,
-                    }}>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: "7px 10px",
+                        borderRadius: 8,
+                        background: "rgba(255,120,80,0.1)",
+                        border: "1px solid rgba(255,120,80,0.22)",
+                        color: "rgba(255,200,180,0.95)",
+                        fontSize: 12,
+                      }}
+                    >
                       {uploadError}
                     </div>
                   )}
 
                   {/* Word limit warning */}
                   {wordCount > wordLimit && (
-                    <div style={{
-                      marginTop: 6, padding: "7px 10px", borderRadius: 8,
-                      background: "rgba(255,120,80,0.1)", border: "1px solid rgba(255,120,80,0.22)",
-                      color: "rgba(255,200,180,0.95)", fontSize: 12,
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                    }}>
-                      <span>⚠ Over word limit by {wordCount - wordLimit} words</span>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: "7px 10px",
+                        borderRadius: 8,
+                        background: "rgba(255,120,80,0.1)",
+                        border: "1px solid rgba(255,120,80,0.22)",
+                        color: "rgba(255,200,180,0.95)",
+                        fontSize: 12,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <span>
+                        ⚠ Over word limit by {wordCount - wordLimit} words
+                      </span>
                       {plan.toUpperCase() !== "UNLIMITED" && (
                         <button
-                          style={{ background: "none", border: "none", color: "#a78bfa", cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "#a78bfa",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 700,
+                          }}
                           onClick={() => router.push("/pricing")}
-                        >Upgrade plan →</button>
+                        >
+                          Upgrade plan →
+                        </button>
                       )}
                     </div>
                   )}
@@ -1645,27 +1922,38 @@ function DashboardContent() {
 
                 {/* ── Output pane ── */}
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <div className="label" style={{ marginBottom: 0 }}>Humanised Output</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 8,
+                    }}
+                  >
+                    <div className="label" style={{ marginBottom: 0 }}>
+                      Humanised Output
+                    </div>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 10 }}
+                    >
                       {/* Output word count */}
                       {outputWordCount > 0 && (
-                        <span style={{
-                          fontSize: 12,
-                          color: "var(--muted)",
-                          background: "rgba(125,239,160,0.08)",
-                          border: "1px solid rgba(125,239,160,0.18)",
-                          borderRadius: 8,
-                          padding: "3px 9px",
-                          fontWeight: 600,
-                        }}>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            color: "var(--muted)",
+                            background: "rgba(125,239,160,0.08)",
+                            border: "1px solid rgba(125,239,160,0.18)",
+                            borderRadius: 8,
+                            padding: "3px 9px",
+                            fontWeight: 600,
+                          }}
+                        >
                           {outputWordCount} words
                         </span>
                       )}
                       {/* Copy button - shows "Copied!" inline */}
-                      {humanText && (
-                        <CopyButton text={humanText} />
-                      )}
+                      {humanText && <CopyButton text={humanText} />}
                     </div>
                   </div>
 
@@ -1678,14 +1966,24 @@ function DashboardContent() {
                   />
 
                   {factCheck && factCheck.numbersPreserved === false && (
-                    <div style={{
-                      marginTop: 6, padding: "7px 10px", borderRadius: 8,
-                      background: "rgba(255,209,102,0.08)", border: "1px solid rgba(255,209,102,0.22)",
-                      color: "rgba(255,224,160,0.95)", fontSize: 12,
-                    }}>
-                      ⚠ Some numbers/dates from your original text may have changed during rewriting
-                      {factCheck.missingNumbers?.length ? ` (check: ${factCheck.missingNumbers.slice(0, 5).join(", ")})` : ""}.
-                      Please verify important figures and citations before using this output.
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: "7px 10px",
+                        borderRadius: 8,
+                        background: "rgba(255,209,102,0.08)",
+                        border: "1px solid rgba(255,209,102,0.22)",
+                        color: "rgba(255,224,160,0.95)",
+                        fontSize: 12,
+                      }}
+                    >
+                      ⚠ Some numbers/dates from your original text may have
+                      changed during rewriting
+                      {factCheck.missingNumbers?.length
+                        ? ` (check: ${factCheck.missingNumbers.slice(0, 5).join(", ")})`
+                        : ""}
+                      . Please verify important figures and citations before
+                      using this output.
                     </div>
                   )}
                 </div>
@@ -1702,17 +2000,31 @@ function DashboardContent() {
                     const stepFraction = isDone
                       ? 1
                       : isActive
-                        ? Math.min(1, (progressFraction - stepStart) / Math.max(0.0001, stepEnd - stepStart))
+                        ? Math.min(
+                            1,
+                            (progressFraction - stepStart) /
+                              Math.max(0.0001, stepEnd - stepStart),
+                          )
                         : 0;
                     return (
                       <div className="progressStepRow" key={step.label}>
-                        <span className={`progressStepLabel ${isActive ? "active" : ""}`}>
-                          {isDone ? "✓ " : ""}{step.label}
+                        <span
+                          className={`progressStepLabel ${isActive ? "active" : ""}`}
+                        >
+                          {isDone ? "✓ " : ""}
+                          {step.label}
                         </span>
                         <div className="progressBarTrack">
-                          <div className="progressBarFill" style={{ width: `${Math.round(stepFraction * 100)}%` }} />
+                          <div
+                            className="progressBarFill"
+                            style={{
+                              width: `${Math.round(stepFraction * 100)}%`,
+                            }}
+                          />
                         </div>
-                        <span className="progressPercent">{Math.round(stepFraction * 100)}%</span>
+                        <span className="progressPercent">
+                          {Math.round(stepFraction * 100)}%
+                        </span>
                       </div>
                     );
                   })}
@@ -1720,29 +2032,61 @@ function DashboardContent() {
               )}
 
               {/* Humanise button + limit info — sits right under the editor, not below the analysis panel */}
-              <div className="footerRow" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div
+                className="footerRow"
+                style={{
+                  flexDirection: "column",
+                  alignItems: "stretch",
+                  gap: 8,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                  }}
+                >
                   <div style={{ fontSize: 12, color: "var(--muted2)" }}>
                     {isGuest ? (
                       guestUsed >= GUEST_TRY_LIMIT ? (
                         <span style={{ color: "rgba(255,209,102,0.95)" }}>
                           Free trial complete.{" "}
-                          <a href="/register" style={{ color: "#ffd166", fontWeight: 700 }}>Create a free account</a> to keep humanising.
+                          <a
+                            href="/register"
+                            style={{ color: "#ffd166", fontWeight: 700 }}
+                          >
+                            Create a free account
+                          </a>{" "}
+                          to keep humanising.
                         </span>
                       ) : (
-                        <span>{GUEST_TRY_LIMIT - guestUsed} free {GUEST_TRY_LIMIT - guestUsed === 1 ? "try" : "tries"} left — sign up anytime to save your history.</span>
+                        <span>
+                          {GUEST_TRY_LIMIT - guestUsed} free{" "}
+                          {GUEST_TRY_LIMIT - guestUsed === 1 ? "try" : "tries"}{" "}
+                          left — sign up anytime to save your history.
+                        </span>
                       )
                     ) : remaining === 0 ? (
                       <span style={{ color: "rgba(255,120,120,0.95)" }}>
                         Daily limit reached.{" "}
-                        <a href="/pricing" style={{ color: "#a78bfa", fontWeight: 700 }}>Upgrade →</a>
+                        <a
+                          href="/pricing"
+                          style={{ color: "#a78bfa", fontWeight: 700 }}
+                        >
+                          Upgrade →
+                        </a>
                       </span>
                     ) : (
                       <span>
                         Output is saved to history. ·{" "}
                         <a
                           href="mailto:astechnologiesinfos@gmail.com"
-                          style={{ color: "rgba(255,255,255,0.35)", textDecoration: "none" }}
+                          style={{
+                            color: "rgba(255,255,255,0.35)",
+                            textDecoration: "none",
+                          }}
                         >
                           Support
                         </a>
@@ -1752,18 +2096,31 @@ function DashboardContent() {
 
                   <div className="actionRow">
                     {isGuest && guestUsed >= GUEST_TRY_LIMIT ? (
-                      <button className="btnPrimary" onClick={() => router.push("/register")}>
+                      <button
+                        className="btnPrimary"
+                        onClick={() => router.push("/register")}
+                      >
                         Sign up to continue
                       </button>
                     ) : (
                       <button
                         className="btnPrimary"
                         onClick={handleHumanise}
-                        disabled={loadingHumanise || (wordCount > wordLimit && plan.toUpperCase() !== "UNLIMITED")}
-                        title={wordCount > wordLimit ? `Reduce text to under ${wordLimit} words` : ""}
+                        disabled={
+                          loadingHumanise ||
+                          (wordCount > wordLimit &&
+                            plan.toUpperCase() !== "UNLIMITED")
+                        }
+                        title={
+                          wordCount > wordLimit
+                            ? `Reduce text to under ${wordLimit} words`
+                            : ""
+                        }
                       >
                         {/* FEATURE 1: countdown timer in the button label */}
-                        {loadingHumanise ? `Working… (~${remainingSeconds}s)` : "Humanise"}
+                        {loadingHumanise
+                          ? `Working… (~${remainingSeconds}s)`
+                          : "Humanise"}
                       </button>
                     )}
                   </div>
@@ -1771,8 +2128,20 @@ function DashboardContent() {
 
                 {/* Nudge guests toward logging in for a bigger daily allowance */}
                 {isGuest && (
-                  <div style={{ fontSize: 12, color: "var(--muted2)", textAlign: "right" }}>
-                    <a href="/login" style={{ color: "#a78bfa", fontWeight: 700 }}>Log in</a> to get 5 more free tries today
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--muted2)",
+                      textAlign: "right",
+                    }}
+                  >
+                    <a
+                      href="/login"
+                      style={{ color: "#a78bfa", fontWeight: 700 }}
+                    >
+                      Log in
+                    </a>{" "}
+                    to get 5 more free tries today
                   </div>
                 )}
               </div>
@@ -1780,9 +2149,13 @@ function DashboardContent() {
               {error ? (
                 <div
                   style={{
-                    marginTop: 12, padding: "10px 12px", borderRadius: 12,
-                    background: "rgba(255,120,120,0.08)", border: "1px solid rgba(255,120,120,0.18)",
-                    color: "rgba(255,210,210,0.95)", fontSize: 13,
+                    marginTop: 12,
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    background: "rgba(255,120,120,0.08)",
+                    border: "1px solid rgba(255,120,120,0.18)",
+                    color: "rgba(255,210,210,0.95)",
+                    fontSize: 13,
                   }}
                 >
                   {error}
@@ -1813,7 +2186,20 @@ function DashboardContent() {
 
 export default function DashboardPage() {
   return (
-    <Suspense fallback={<div style={{ padding: 40, color: "rgba(255,255,255,0.7)", background: "#0b1022", minHeight: "100vh" }}>Loading…</div>}>
+    <Suspense
+      fallback={
+        <div
+          style={{
+            padding: 40,
+            color: "rgba(255,255,255,0.7)",
+            background: "#0b1022",
+            minHeight: "100vh",
+          }}
+        >
+          Loading…
+        </div>
+      }
+    >
       <DashboardContent />
     </Suspense>
   );

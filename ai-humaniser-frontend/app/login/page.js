@@ -32,7 +32,8 @@ export default function LoginPage() {
     try {
       const res = await api.post("/auth/login", form);
       localStorage.setItem("token", res.data.token);
-      if (res.data.user) localStorage.setItem("user", JSON.stringify(res.data.user));
+      if (res.data.user)
+        localStorage.setItem("user", JSON.stringify(res.data.user));
       const key = `usage:${todayKey()}`;
       if (!localStorage.getItem(key)) localStorage.setItem(key, "0");
       router.push("/dashboard");
@@ -48,7 +49,13 @@ export default function LoginPage() {
       <div className="authBg" />
       <div className="authWrap">
         <div className="brandRow">
-          <div className="brandMark">✦</div>
+          <div className="brandMark">
+            <img
+              src="/logo.png"
+              alt="AI Humaniser"
+              style={{ width: "80%", height: "80%", objectFit: "contain" }}
+            />
+          </div>
           <div className="brandText">
             <div className="brandName">AI Humaniser</div>
             <div className="brandTag">Sign in to continue</div>
@@ -90,15 +97,20 @@ export default function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </button>
 
-            <div className="divider"><span>or</span></div>
+            <div className="divider">
+              <span>or</span>
+            </div>
 
             <div className="googleRow">
               <GoogleButton
                 onDone={(payload) => {
-                  if (payload?.token) localStorage.setItem("token", payload.token);
-                  if (payload?.user) localStorage.setItem("user", JSON.stringify(payload.user));
+                  if (payload?.token)
+                    localStorage.setItem("token", payload.token);
+                  if (payload?.user)
+                    localStorage.setItem("user", JSON.stringify(payload.user));
                   const key = `usage:${todayKey()}`;
-                  if (!localStorage.getItem(key)) localStorage.setItem(key, "0");
+                  if (!localStorage.getItem(key))
+                    localStorage.setItem(key, "0");
                   router.push("/dashboard");
                 }}
               />
@@ -111,7 +123,9 @@ export default function LoginPage() {
           </form>
         </div>
 
-        <div className="authHint">By signing in, you agree to the Terms and Privacy Policy.</div>
+        <div className="authHint">
+          By signing in, you agree to the Terms and Privacy Policy.
+        </div>
       </div>
     </div>
   );

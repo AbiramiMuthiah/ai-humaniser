@@ -45,7 +45,8 @@ export default function RegisterPage() {
 
       // Save auth
       localStorage.setItem("token", res.data.token);
-      if (res.data.user) localStorage.setItem("user", JSON.stringify(res.data.user));
+      if (res.data.user)
+        localStorage.setItem("user", JSON.stringify(res.data.user));
 
       // Optional: initialize usage key for today if missing
       const key = `usage:${todayKey()}`;
@@ -63,7 +64,13 @@ export default function RegisterPage() {
     <div className="auth-page">
       <div className="auth-wrap">
         <div className="brand">
-          <div className="brand-icon" aria-hidden="true">✦</div>
+          <div className="brand-icon" aria-hidden="true">
+            <img
+              src="/logo.png"
+              alt=""
+              style={{ width: "80%", height: "80%", objectFit: "contain" }}
+            />
+          </div>
           <div className="brand-text">
             <div className="brand-name">AI Humaniser</div>
             <div className="brand-sub">Start free, upgrade later</div>
@@ -127,11 +134,14 @@ export default function RegisterPage() {
                 onDone={(payload) => {
                   // payload may include { token, user } depending on your GoogleButton
                   // If your GoogleButton already stores token, this is safe anyway.
-                  if (payload?.token) localStorage.setItem("token", payload.token);
-                  if (payload?.user) localStorage.setItem("user", JSON.stringify(payload.user));
+                  if (payload?.token)
+                    localStorage.setItem("token", payload.token);
+                  if (payload?.user)
+                    localStorage.setItem("user", JSON.stringify(payload.user));
 
                   const key = `usage:${todayKey()}`;
-                  if (!localStorage.getItem(key)) localStorage.setItem(key, "0");
+                  if (!localStorage.getItem(key))
+                    localStorage.setItem(key, "0");
 
                   router.push("/dashboard");
                 }}
@@ -149,8 +159,14 @@ export default function RegisterPage() {
 
         <div className="legal">
           By creating an account, you agree to the{" "}
-          <a href="#" className="link">Terms</a> and{" "}
-          <a href="#" className="link">Privacy Policy</a>.
+          <a href="#" className="link">
+            Terms
+          </a>{" "}
+          and{" "}
+          <a href="#" className="link">
+            Privacy Policy
+          </a>
+          .
         </div>
       </div>
 
@@ -161,8 +177,16 @@ export default function RegisterPage() {
           place-items: center;
           padding: 48px 16px;
           background:
-            radial-gradient(900px 500px at 50% 25%, rgba(139,92,246,.35), transparent 60%),
-            radial-gradient(700px 450px at 20% 80%, rgba(56,189,248,.18), transparent 60%),
+            radial-gradient(
+              900px 500px at 50% 25%,
+              rgba(139, 92, 246, 0.35),
+              transparent 60%
+            ),
+            radial-gradient(
+              700px 450px at 20% 80%,
+              rgba(56, 189, 248, 0.18),
+              transparent 60%
+            ),
             linear-gradient(180deg, #0b1020 0%, #070a14 100%);
         }
 
@@ -176,7 +200,7 @@ export default function RegisterPage() {
           align-items: center;
           gap: 12px;
           margin-bottom: 14px;
-          color: rgba(255,255,255,.92);
+          color: rgba(255, 255, 255, 0.92);
         }
 
         .brand-icon {
@@ -185,42 +209,42 @@ export default function RegisterPage() {
           border-radius: 14px;
           display: grid;
           place-items: center;
-          background: rgba(139,92,246,.25);
-          border: 1px solid rgba(255,255,255,.12);
-          box-shadow: 0 10px 30px rgba(0,0,0,.35);
+          background: rgba(139, 92, 246, 0.25);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
           font-size: 18px;
         }
 
         .brand-name {
           font-weight: 700;
-          letter-spacing: .2px;
+          letter-spacing: 0.2px;
         }
 
         .brand-sub {
           margin-top: 2px;
           font-size: 13px;
-          color: rgba(255,255,255,.65);
+          color: rgba(255, 255, 255, 0.65);
         }
 
         .card {
           border-radius: 18px;
           padding: 22px;
-          background: rgba(255,255,255,.06);
-          border: 1px solid rgba(255,255,255,.12);
-          box-shadow: 0 18px 60px rgba(0,0,0,.45);
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
           backdrop-filter: blur(16px);
         }
 
         h1 {
           margin: 0;
           font-size: 26px;
-          color: rgba(255,255,255,.95);
-          letter-spacing: .2px;
+          color: rgba(255, 255, 255, 0.95);
+          letter-spacing: 0.2px;
         }
 
         .sub {
           margin: 6px 0 16px;
-          color: rgba(255,255,255,.65);
+          color: rgba(255, 255, 255, 0.65);
           font-size: 13.5px;
         }
 
@@ -233,7 +257,7 @@ export default function RegisterPage() {
           display: grid;
           gap: 6px;
           font-size: 12px;
-          color: rgba(255,255,255,.7);
+          color: rgba(255, 255, 255, 0.7);
         }
 
         input {
@@ -242,21 +266,21 @@ export default function RegisterPage() {
           padding: 0 14px;
           border-radius: 12px;
           outline: none;
-          background: rgba(0,0,0,.25);
-          border: 1px solid rgba(255,255,255,.12);
-          color: rgba(255,255,255,.92);
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: rgba(255, 255, 255, 0.92);
         }
 
         input:focus {
-          border-color: rgba(139,92,246,.55);
-          box-shadow: 0 0 0 4px rgba(139,92,246,.15);
+          border-color: rgba(139, 92, 246, 0.55);
+          box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.15);
         }
 
         .msg {
           font-size: 13px;
           color: #ffd0d0;
-          background: rgba(239,68,68,.12);
-          border: 1px solid rgba(239,68,68,.25);
+          background: rgba(239, 68, 68, 0.12);
+          border: 1px solid rgba(239, 68, 68, 0.25);
           padding: 10px 12px;
           border-radius: 12px;
         }
@@ -264,15 +288,19 @@ export default function RegisterPage() {
         .primary {
           height: 44px;
           border-radius: 12px;
-          border: 1px solid rgba(255,255,255,.12);
-          background: linear-gradient(90deg, rgba(139,92,246,.95), rgba(99,102,241,.9));
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: linear-gradient(
+            90deg,
+            rgba(139, 92, 246, 0.95),
+            rgba(99, 102, 241, 0.9)
+          );
           color: #0b1020;
           font-weight: 700;
           cursor: pointer;
         }
 
         .primary:disabled {
-          opacity: .7;
+          opacity: 0.7;
           cursor: not-allowed;
         }
 
@@ -281,13 +309,13 @@ export default function RegisterPage() {
           grid-template-columns: 1fr auto 1fr;
           align-items: center;
           gap: 10px;
-          color: rgba(255,255,255,.5);
+          color: rgba(255, 255, 255, 0.5);
           margin: 6px 0 2px;
         }
 
         .divider span {
           height: 1px;
-          background: rgba(255,255,255,.12);
+          background: rgba(255, 255, 255, 0.12);
         }
 
         .divider em {
@@ -302,12 +330,12 @@ export default function RegisterPage() {
         .foot {
           margin-top: 6px;
           font-size: 13px;
-          color: rgba(255,255,255,.65);
+          color: rgba(255, 255, 255, 0.65);
           text-align: center;
         }
 
         .link {
-          color: rgba(167,139,250,.95);
+          color: rgba(167, 139, 250, 0.95);
           text-decoration: none;
           font-weight: 700;
         }
@@ -320,7 +348,7 @@ export default function RegisterPage() {
           margin-top: 12px;
           text-align: center;
           font-size: 12px;
-          color: rgba(255,255,255,.45);
+          color: rgba(255, 255, 255, 0.45);
         }
       `}</style>
     </div>
