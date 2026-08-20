@@ -1383,14 +1383,15 @@ function DashboardContent() {
           >
             <div
               style={{
-                width: 34,
-                height: 34,
+                width: 38,
+                height: 38,
                 borderRadius: 12,
                 background:
-                  "linear-gradient(135deg, rgba(139,120,255,0.9), rgba(109,93,255,0.9))",
+                  "linear-gradient(160deg, rgba(20,26,46,0.9), rgba(11,16,34,0.95))",
                 display: "grid",
                 placeItems: "center",
-                boxShadow: "0 10px 30px rgba(139,120,255,0.25)",
+                border: "1px solid rgba(139,120,255,0.22)",
+                boxShadow: "0 8px 22px rgba(0,0,0,0.35)",
                 flex: "0 0 auto",
                 overflow: "hidden",
               }}
@@ -1400,7 +1401,7 @@ function DashboardContent() {
               <img
                 src="/logo.png"
                 alt="AI Humaniser"
-                style={{ width: "80%", height: "80%", objectFit: "contain" }}
+                style={{ width: "94%", height: "94%", objectFit: "contain" }}
               />
             </div>
 
