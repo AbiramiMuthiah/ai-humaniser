@@ -5,23 +5,26 @@ import Providers from "./providers";
 export const metadata: Metadata = {
   metadataBase: new URL("https://ashumanizer.com"),
   title: {
-    default: "AI Humanizer – Humanize AI Text Free | Ashumanizer",
+    default:
+      "AI Humaniser (AI Humanizer) – Humanize AI Text Free | Ashumanizer",
     template: "%s | Ashumanizer",
   },
   description:
-    "Humanize AI text with Ashumanizer. Rewrite ChatGPT, Gemini, and other AI-generated content into natural, clear, human-sounding writing. Try it free.",
+    "Ashumanizer is an AI Humaniser (AI Humanizer) that rewrites ChatGPT, Gemini, and other AI-generated text into natural, clear, human-sounding writing. Try it free.",
   keywords: [
+    "AI humaniser",
     "AI humanizer",
     "humanize AI text",
     "AI to human text converter",
     "humanize ChatGPT text",
     "free AI humanizer",
+    "free AI humaniser",
     "AI text humanizer",
   ],
   openGraph: {
-    title: "AI Humanizer – Humanize AI Text Free | Ashumanizer",
+    title: "AI Humaniser (AI Humanizer) – Humanize AI Text Free | Ashumanizer",
     description:
-      "Humanize AI text with Ashumanizer. Rewrite AI-generated content into natural, clear, human-sounding writing.",
+      "Ashumanizer is an AI Humaniser that rewrites AI-generated content into natural, clear, human-sounding writing.",
     url: "https://ashumanizer.com",
     siteName: "Ashumanizer",
     type: "website",
@@ -30,15 +33,15 @@ export const metadata: Metadata = {
         url: "/logo.png",
         width: 1200,
         height: 1200,
-        alt: "Ashumanizer — AI Humanizer",
+        alt: "Ashumanizer — AI Humaniser",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "AI Humanizer – Humanize AI Text Free | Ashumanizer",
+    title: "AI Humaniser (AI Humanizer) – Humanize AI Text Free | Ashumanizer",
     description:
-      "Humanize AI text with Ashumanizer. Rewrite AI-generated content into natural, clear, human-sounding writing.",
+      "Ashumanizer is an AI Humaniser that rewrites AI-generated content into natural, clear, human-sounding writing.",
     images: ["/logo.png"],
   },
   alternates: {

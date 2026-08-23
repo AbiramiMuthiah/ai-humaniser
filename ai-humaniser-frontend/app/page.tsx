@@ -4,6 +4,7 @@ const jsonLd = {
   "@context": "https://schema.org",
   "@type": "WebApplication",
   name: "Ashumanizer",
+  alternateName: "AI Humaniser",
   url: "https://ashumanizer.com",
   applicationCategory: "UtilitiesApplication",
   operatingSystem: "Web",
@@ -40,7 +41,10 @@ export default function Home() {
             lineHeight: 1.15,
           }}
         >
-          AI Humanizer
+          AI Humaniser{" "}
+          <span style={{ opacity: 0.55, fontWeight: 600, fontSize: 24 }}>
+            (AI Humanizer)
+          </span>
         </h1>
         <p
           style={{
@@ -50,9 +54,9 @@ export default function Home() {
             margin: "0 auto 28px",
           }}
         >
-          Humanize AI text and make it sound natural, clear, and authentic.
-          Rewrite ChatGPT, Gemini, and other AI-generated content into writing a
-          real person would recognize as their own.
+          Ashumanizer is an AI Humaniser that makes AI text sound natural,
+          clear, and authentic. Rewrite ChatGPT, Gemini, and other AI-generated
+          content into writing a real person would recognize as their own.
         </p>
         <div
           style={{
@@ -94,14 +98,15 @@ export default function Home() {
 
       <section style={{ marginBottom: 40 }}>
         <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 12 }}>
-          What Is an AI Humanizer?
+          What Is an AI Humaniser?
         </h2>
         <p style={{ color: "rgba(255,255,255,0.75)", lineHeight: 1.7 }}>
-          An AI humanizer rewrites text produced by tools like ChatGPT or Gemini
-          so it reads the way a person actually writes — varied sentence rhythm,
-          natural word choice, and a voice that doesn't sound templated.
-          Ashumanizer does this while keeping every fact, number, and citation
-          in your original text exactly as you wrote it.
+          An AI humaniser (also spelled AI humanizer) rewrites text produced by
+          tools like ChatGPT or Gemini so it reads the way a person actually
+          writes — varied sentence rhythm, natural word choice, and a voice that
+          doesn't sound templated. Ashumanizer does this while keeping every
+          fact, number, and citation in your original text exactly as you wrote
+          it.
         </p>
       </section>
 
@@ -119,7 +124,7 @@ export default function Home() {
 
       <section style={{ marginBottom: 40 }}>
         <h2 style={{ fontSize: 24, fontWeight: 800, marginBottom: 12 }}>
-          AI Humanizer Features
+          AI Humaniser Features
         </h2>
         <ul
           style={{
@@ -165,6 +170,16 @@ export default function Home() {
             <p style={{ color: "rgba(255,255,255,0.7)", lineHeight: 1.6 }}>
               Yes — you can try Ashumanizer without an account, and creating a
               free account gives you a higher daily limit.
+            </p>
+          </div>
+          <div>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
+              Is it "AI Humaniser" or "AI Humanizer"?
+            </h3>
+            <p style={{ color: "rgba(255,255,255,0.7)", lineHeight: 1.6 }}>
+              Both spellings refer to the same thing — "Humaniser" is the
+              British spelling and "Humanizer" is the American spelling.
+              Ashumanizer works the same either way.
             </p>
           </div>
           <div>
