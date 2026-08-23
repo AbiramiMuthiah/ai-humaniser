@@ -176,11 +176,11 @@ export default function PricingPage() {
       {/* Topbar */}
       <header style={s.topbar}>
         <div style={s.brand}>
-          <div style={{ ...s.logo, overflow: "hidden" }}>
+          <div style={s.logo}>
             <img
               src="/logo.png"
               alt="AI Humaniser"
-              style={{ width: "80%", height: "80%", objectFit: "contain" }}
+              style={{ width: "94%", height: "94%", objectFit: "contain" }}
             />
           </div>
           <span style={{ fontWeight: 900, fontSize: 15 }}>AI Humaniser</span>
@@ -479,11 +479,15 @@ const s = {
     width: 32,
     height: 32,
     borderRadius: 10,
-    background: "linear-gradient(135deg,#8b78ff,#6d5dff)",
+    background:
+      "linear-gradient(160deg, rgba(20,26,46,0.9), rgba(11,16,34,0.95))",
+    border: "1px solid rgba(139,120,255,0.22)",
+    boxShadow: "0 8px 22px rgba(0,0,0,0.35)",
     display: "grid",
     placeItems: "center",
     fontSize: 14,
     fontWeight: 900,
+    overflow: "hidden",
   },
   nav: { display: "flex", gap: 8 },
   navLink: {

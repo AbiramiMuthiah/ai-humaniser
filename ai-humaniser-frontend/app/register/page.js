@@ -68,7 +68,7 @@ export default function RegisterPage() {
             <img
               src="/logo.png"
               alt=""
-              style={{ width: "80%", height: "80%", objectFit: "contain" }}
+              style={{ width: "94%", height: "94%", objectFit: "contain" }}
             />
           </div>
           <div className="brand-text">
@@ -209,10 +209,15 @@ export default function RegisterPage() {
           border-radius: 14px;
           display: grid;
           place-items: center;
-          background: rgba(139, 92, 246, 0.25);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+          background: linear-gradient(
+            160deg,
+            rgba(20, 26, 46, 0.9),
+            rgba(11, 16, 34, 0.95)
+          );
+          border: 1px solid rgba(139, 120, 255, 0.22);
+          box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
           font-size: 18px;
+          overflow: hidden;
         }
 
         .brand-name {

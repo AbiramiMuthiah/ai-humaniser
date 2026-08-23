@@ -49,11 +49,20 @@ export default function LoginPage() {
       <div className="authBg" />
       <div className="authWrap">
         <div className="brandRow">
-          <div className="brandMark">
+          <div
+            className="brandMark"
+            style={{
+              background:
+                "linear-gradient(160deg, rgba(20,26,46,0.9), rgba(11,16,34,0.95))",
+              border: "1px solid rgba(139,120,255,0.22)",
+              boxShadow: "0 8px 22px rgba(0,0,0,0.35)",
+              overflow: "hidden",
+            }}
+          >
             <img
               src="/logo.png"
               alt="AI Humaniser"
-              style={{ width: "80%", height: "80%", objectFit: "contain" }}
+              style={{ width: "94%", height: "94%", objectFit: "contain" }}
             />
           </div>
           <div className="brandText">
