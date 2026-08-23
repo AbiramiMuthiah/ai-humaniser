@@ -28,6 +28,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "yearly",
       priority: 0.5,
     },
+    {
+      url: `${BASE_URL}/blog`,
+      lastModified: new Date(),
+      changeFrequency: "weekly",
+      priority: 0.7,
+    },
+    {
+      url: `${BASE_URL}/blog/how-to-humanize-chatgpt-text`,
+      lastModified: new Date(),
+      changeFrequency: "monthly",
+      priority: 0.8,
+    },
     // Add these once you create the pages (Phase 2, steps 8-10 in your plan):
     // {
     //   url: `${BASE_URL}/ai-humanizer`,
